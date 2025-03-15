@@ -121,3 +121,94 @@ type SyncthingEvent struct {
 	Time     time.Time `json:"time"`
 	Type     string    `json:"type"`
 }
+
+type SyncthingSystemStatus struct {
+	Alloc                   int64                       `json:"alloc"`
+	ConnectionServiceStatus map[string]ConnectionStatus `json:"connectionServiceStatus"`
+	CPUPercent              float64                     `json:"cpuPercent"`
+	DiscoveryEnabled        bool                        `json:"discoveryEnabled"`
+	DiscoveryErrors         map[string]string           `json:"discoveryErrors"`
+	DiscoveryMethods        int                         `json:"discoveryMethods"`
+	DiscoveryStatus         map[string]DiscoveryStatus  `json:"discoveryStatus"`
+	Goroutines              int                         `json:"goroutines"`
+	GUIAddressOverridden    bool                        `json:"guiAddressOverridden"`
+	GUIAddressUsed          string                      `json:"guiAddressUsed"`
+	LastDialStatus          map[string]DialStatus       `json:"lastDialStatus"`
+	MyID                    string                      `json:"myID"`
+	PathSeparator           string                      `json:"pathSeparator"`
+	StartTime               time.Time                   `json:"startTime"`
+	Sys                     int64                       `json:"sys"`
+	Tilde                   string                      `json:"tilde"`
+	Uptime                  int64                       `json:"uptime"`
+	URVersionMax            int                         `json:"urVersionMax"`
+}
+
+type ConnectionStatus struct {
+	Error        *string  `json:"error"`
+	LANAddresses []string `json:"lanAddresses"`
+	WANAddresses []string `json:"wanAddresses"`
+}
+
+type DiscoveryStatus struct {
+	Error *string `json:"error"`
+}
+
+type DialStatus struct {
+	When  time.Time `json:"when"`
+	Error *string   `json:"error"`
+}
+
+type Connection struct {
+	At            time.Time   `json:"at"`
+	InBytesTotal  int64       `json:"inBytesTotal"`
+	OutBytesTotal int64       `json:"outBytesTotal"`
+	StartedAt     time.Time   `json:"startedAt"`
+	Connected     bool        `json:"connected"`
+	Paused        bool        `json:"paused"`
+	ClientVersion string      `json:"clientVersion"`
+	Address       string      `json:"address"`
+	Type          string      `json:"type"`
+	IsLocal       bool        `json:"isLocal"`
+	Crypto        string      `json:"crypto"`
+	Primary       *Connection `json:"primary"`
+}
+
+type Total struct {
+	At            time.Time `json:"at"`
+	InBytesTotal  int64     `json:"inBytesTotal"`
+	OutBytesTotal int64     `json:"outBytesTotal"`
+}
+
+type Connections map[string]Connection
+
+type SyncthingSystemConnections struct {
+	Connections Connections `json:"connections"`
+	Total       Total       `json:"total"`
+}
+
+type SyncthingDevice struct {
+	DeviceID                 string          `json:"deviceID"`
+	Name                     string          `json:"name"`
+	Addresses                []string        `json:"addresses"`
+	Compression              string          `json:"compression"`
+	CertName                 string          `json:"certName"`
+	Introducer               bool            `json:"introducer"`
+	SkipIntroductionRemovals bool            `json:"skipIntroductionRemovals"`
+	IntroducedBy             string          `json:"introducedBy"`
+	Paused                   bool            `json:"paused"`
+	AllowedNetworks          []string        `json:"allowedNetworks"`
+	AutoAcceptFolders        bool            `json:"autoAcceptFolders"`
+	MaxSendKbps              int             `json:"maxSendKbps"`
+	MaxRecvKbps              int             `json:"maxRecvKbps"`
+	IgnoredFolders           []IgnoredFolder `json:"ignoredFolders"`
+	MaxRequestKiB            int             `json:"maxRequestKiB"`
+	Untrusted                bool            `json:"untrusted"`
+	RemoteGUIPort            int             `json:"remoteGUIPort"`
+	NumConnections           int             `json:"numConnections"`
+}
+
+type IgnoredFolder struct {
+	Time  time.Time `json:"time"`
+	ID    string    `json:"id"`
+	Label string    `json:"label"`
+}
