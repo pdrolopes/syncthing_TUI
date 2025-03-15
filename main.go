@@ -8,32 +8,30 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"slices"
 	"strconv"
-	"time"
 
 	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/elliotchance/orderedmap/v3"
+	"github.com/davecgh/go-spew/spew"
 )
 
 type errMsg error
 
 // # Useful links
 // https://docs.syncthing.net/dev/rest.html#rest-pagination
-// https://github.com/76creates/stickers verify flexbox
 // https://leg100.github.io/en/posts/building-bubbletea-programs/#2-dump-messages-to-a-file
 
 // TODO create const for syncthing ports paths
 // TODO currently we are skipping tls verification for the https://localhost path. What can we do about it
 
 type model struct {
-	spinner            spinner.Model
+	dump               io.Writer
+	list               list.Model
 	loading            bool
 	err                error
-	folders            orderedmap.OrderedMap[string, SyncthingFolder]
+	folders            []SyncthingFolder
 	width              int
 	height             int
 	syncthingApiKey    string
@@ -45,36 +43,61 @@ var quitKeys = key.NewBinding(
 	key.WithHelp("", "press q to quit"),
 )
 
+var down = key.NewBinding(
+	key.WithKeys("down", "j"),
+	key.WithHelp("", "press q to quit"),
+)
+var up = key.NewBinding(
+	key.WithKeys("up", "k"),
+	key.WithHelp("", "press q to quit"),
+)
+
 func initialModel() model {
-	s := spinner.New()
-	s.Spinner = spinner.Dot
-	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+	var dump *os.File
+	if _, ok := os.LookupEnv("DEBUG"); ok {
+		var err error
+		dump, err = os.OpenFile("messages.log", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+		if err != nil {
+			os.Exit(1)
+		}
+	}
 	syncthingApiKey := os.Getenv("SYNCTHING_API_KEY")
 
 	return model{
-		spinner:         s,
+		list:            list.New(make([]list.Item, 0), list.NewDefaultDelegate(), 30, 20),
 		loading:         true,
 		syncthingApiKey: syncthingApiKey,
+		dump:            dump,
 	}
 }
 
 func (m model) Init() tea.Cmd {
 	return tea.Batch(
-		m.spinner.Tick,
 		fetchFolders(m.syncthingApiKey),
 		fetchEvents(m.syncthingApiKey, m.synchingEventSince),
 	)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.dump != nil {
+		spew.Fdump(m.dump, msg)
+	}
+
 	switch msg := msg.(type) {
 
 	case tea.KeyMsg:
-		if key.Matches(msg, quitKeys) {
+		switch {
+		case key.Matches(msg, quitKeys):
 			return m, tea.Quit
-
+		case key.Matches(msg, down):
+			m.list.CursorDown()
+			return m, nil
+		case key.Matches(msg, up):
+			m.list.CursorUp()
+			return m, nil
+		default:
+			return m, nil
 		}
-		return m, nil
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -82,26 +105,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case FetchedFoldersMsg:
-		foo := FetchedFoldersMsg(msg)
 		m.loading = false
-		if foo.err != nil {
-			m.err = foo.err
+		if msg.err != nil {
+			m.err = msg.err
 			return m, nil
 		}
 
-		m.folders = FetchedFoldersMsg(msg).folders
+		items := make([]list.Item, 0)
+		for _, f := range msg.folders {
+			items = append(items, f)
+		}
+		// m.list = list.New(items, list.NewDefaultDelegate(), 30, 20)
+		m.list.Title = fmt.Sprintf("Folders (%d)", len(msg.folders))
+		m.list.SetItems(items)
+		m.list.Styles.Title = titleStyle
+		m.list.SetShowHelp(false)
+		m.folders = msg.folders
 		return m, nil
 	case FetchedEventsMsg:
-		events := FetchedEventsMsg(msg)
-		if events.err != nil {
+		if msg.err != nil {
 			// TODO figure out what to do if event errors
-			m.err = events.err
+			m.err = msg.err
 		}
-		if len(events.events) > 1 {
-			m.synchingEventSince = events.events[len(events.events)-1].ID
+		if len(msg.events) > 0 {
+			m.synchingEventSince = msg.events[len(msg.events)-1].ID
 		}
 		cmds := make([]tea.Cmd, 0)
-		for _, e := range events.events {
+		for _, e := range msg.events {
 			if e.Type == "StateChanged" || e.Type == "FolderPaused" {
 				cmds = append(cmds, fetchFolders(m.syncthingApiKey))
 				break
@@ -115,13 +145,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	default:
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		return m, cmd
+		var cmds []tea.Cmd
+		newListModel, cmd := m.list.Update(msg)
+		m.list = newListModel
+		cmds = append(cmds, cmd)
+		return m, tea.Batch(cmds...)
 	}
 }
 
 // ------------------ VIEW --------------------------
+var (
+	appStyle = lipgloss.NewStyle().Padding(1, 2)
+
+	titleStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFFDF5")).
+			Background(lipgloss.Color("#25A065")).
+			Padding(0, 1)
+
+	statusMessageStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.AdaptiveColor{Light: "#04B575", Dark: "#04B575"}).
+				Render
+)
+
 func (m model) View() string {
 	if m.err != nil {
 		return m.err.Error()
@@ -131,12 +176,13 @@ func (m model) View() string {
 		return "Missing api key to acess syncthing. Env: SYNCTHING_API_KEY"
 	}
 
-	if m.loading {
-		str := fmt.Sprintf("\n\n   %s Loading syncthing data... %s\n\n", m.spinner.View(), quitKeys.Help().Desc)
-		return str
-	}
+	// if m.loading {
+	// 	str := fmt.Sprintf("\n\n   %s Loading syncthing data... %s\n\n", m.spinner.View(), quitKeys.Help().Desc)
+	// 	return str
+	// }
+	return appStyle.Render(m.list.View())
 
-	return ViewFolders(slices.Collect(m.folders.Values()))
+	// return ViewFolders(slices.Collect(m.folders.Values()))
 }
 
 func ViewFolders(folders []SyncthingFolder) string {
@@ -163,7 +209,7 @@ func ViewFolders(folders []SyncthingFolder) string {
 // TODO return colors somehow
 func statusLabel(foo SyncthingFolder) string {
 	if foo.status.State == "syncing" {
-		return "Syncthing"
+		return "Syncing"
 	}
 	if foo.status.State == "scanning" {
 		return lipgloss.
@@ -189,11 +235,11 @@ func statusLabel(foo SyncthingFolder) string {
 		NewStyle().
 		Foreground(lipgloss.
 			Color("#087331")).
-		Render("Everything ok")
+		Render("Up to Date")
 }
 
 func main() {
-	p := tea.NewProgram(initialModel(), tea.WithAltScreen())
+	p := tea.NewProgram(initialModel(), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		fmt.Println(err)
 		os.Exit(1)
@@ -202,7 +248,7 @@ func main() {
 
 // Message for HTTP response
 type FetchedFoldersMsg struct {
-	folders orderedmap.OrderedMap[string, SyncthingFolder]
+	folders []SyncthingFolder
 	err     error
 }
 
@@ -219,8 +265,7 @@ func fetchFolders(apiKey string) tea.Cmd {
 			return FetchedFoldersMsg{err: err}
 		}
 
-		// foo := make(orderedmap[string]SyncthingFolder)
-		foo := orderedmap.NewOrderedMap[string, SyncthingFolder]()
+		foo := make([]SyncthingFolder, 0, len(folders))
 		for _, configFolder := range folders {
 			params := url.Values{}
 			params.Add("folder", configFolder.ID)
@@ -232,13 +277,14 @@ func fetchFolders(apiKey string) tea.Cmd {
 			if err != nil {
 				return FetchedFoldersMsg{err: err}
 			}
-			foo.Set(configFolder.ID, SyncthingFolder{
+
+			foo = append(foo, SyncthingFolder{
 				config: configFolder,
 				status: statusFolder,
 			})
 		}
 
-		return FetchedFoldersMsg{folders: *foo}
+		return FetchedFoldersMsg{folders: foo}
 	}
 }
 
@@ -261,88 +307,16 @@ type SyncthingFolder struct {
 	status SyncthingFolderStatus
 }
 
-// SYNCTHING DATA STRUCTURES
-type SyncthingFolderConfig struct {
-	ID                      string      `json:"id"`
-	Label                   string      `json:"label"`
-	FilesystemType          string      `json:"filesystemType"`
-	Path                    string      `json:"path"`
-	Type                    string      `json:"type"`
-	Devices                 []Device    `json:"devices"`
-	RescanIntervalS         int         `json:"rescanIntervalS"`
-	FsWatcherEnabled        bool        `json:"fsWatcherEnabled"`
-	FsWatcherDelayS         int         `json:"fsWatcherDelayS"`
-	FsWatcherTimeoutS       int         `json:"fsWatcherTimeoutS"`
-	IgnorePerms             bool        `json:"ignorePerms"`
-	AutoNormalize           bool        `json:"autoNormalize"`
-	MinDiskFree             MinDiskFree `json:"minDiskFree"`
-	Versioning              Versioning  `json:"versioning"`
-	Copiers                 int         `json:"copiers"`
-	PullerMaxPendingKiB     int         `json:"pullerMaxPendingKiB"`
-	Hashers                 int         `json:"hashers"`
-	Order                   string      `json:"order"`
-	IgnoreDelete            bool        `json:"ignoreDelete"`
-	ScanProgressIntervalS   int         `json:"scanProgressIntervalS"`
-	PullerPauseS            int         `json:"pullerPauseS"`
-	MaxConflicts            int         `json:"maxConflicts"`
-	DisableSparseFiles      bool        `json:"disableSparseFiles"`
-	DisableTempIndexes      bool        `json:"disableTempIndexes"`
-	Paused                  bool        `json:"paused"`
-	WeakHashThresholdPct    int         `json:"weakHashThresholdPct"`
-	MarkerName              string      `json:"markerName"`
-	CopyOwnershipFromParent bool        `json:"copyOwnershipFromParent"`
-	ModTimeWindowS          int         `json:"modTimeWindowS"`
-	MaxConcurrentWrites     int         `json:"maxConcurrentWrites"`
-	DisableFsync            bool        `json:"disableFsync"`
-	BlockPullOrder          string      `json:"blockPullOrder"`
-	CopyRangeMethod         string      `json:"copyRangeMethod"`
-	CaseSensitiveFS         bool        `json:"caseSensitiveFS"`
-	JunctionsAsDirs         bool        `json:"junctionsAsDirs"`
-	SyncOwnership           bool        `json:"syncOwnership"`
-	SendOwnership           bool        `json:"sendOwnership"`
-	SyncXattrs              bool        `json:"syncXattrs"`
-	SendXattrs              bool        `json:"sendXattrs"`
-	XattrFilter             XattrFilter `json:"xattrFilter"`
+func (f SyncthingFolder) FilterValue() string {
+	return f.config.Label
 }
 
-type SyncthingFolderStatus struct {
-	Errors                        int            `json:"errors"`
-	PullErrors                    int            `json:"pullErrors"`
-	Invalid                       string         `json:"invalid"`
-	GlobalFiles                   int            `json:"globalFiles"`
-	GlobalDirectories             int            `json:"globalDirectories"`
-	GlobalSymlinks                int            `json:"globalSymlinks"`
-	GlobalDeleted                 int            `json:"globalDeleted"`
-	GlobalBytes                   int64          `json:"globalBytes"`
-	GlobalTotalItems              int            `json:"globalTotalItems"`
-	LocalFiles                    int            `json:"localFiles"`
-	LocalDirectories              int            `json:"localDirectories"`
-	LocalSymlinks                 int            `json:"localSymlinks"`
-	LocalDeleted                  int            `json:"localDeleted"`
-	LocalBytes                    int64          `json:"localBytes"`
-	LocalTotalItems               int            `json:"localTotalItems"`
-	NeedFiles                     int            `json:"needFiles"`
-	NeedDirectories               int            `json:"needDirectories"`
-	NeedSymlinks                  int            `json:"needSymlinks"`
-	NeedDeletes                   int            `json:"needDeletes"`
-	NeedBytes                     int64          `json:"needBytes"`
-	NeedTotalItems                int            `json:"needTotalItems"`
-	ReceiveOnlyChangedFiles       int            `json:"receiveOnlyChangedFiles"`
-	ReceiveOnlyChangedDirectories int            `json:"receiveOnlyChangedDirectories"`
-	ReceiveOnlyChangedSymlinks    int            `json:"receiveOnlyChangedSymlinks"`
-	ReceiveOnlyChangedDeletes     int            `json:"receiveOnlyChangedDeletes"`
-	ReceiveOnlyChangedBytes       int64          `json:"receiveOnlyChangedBytes"`
-	ReceiveOnlyTotalItems         int            `json:"receiveOnlyTotalItems"`
-	InSyncFiles                   int            `json:"inSyncFiles"`
-	InSyncBytes                   int64          `json:"inSyncBytes"`
-	State                         string         `json:"state"`
-	StateChanged                  time.Time      `json:"stateChanged"`
-	Error                         string         `json:"error"`
-	Version                       int            `json:"version"`
-	Sequence                      int            `json:"sequence"`
-	RemoteSequence                map[string]int `json:"remoteSequence"`
-	IgnorePatterns                bool           `json:"ignorePatterns"`
-	WatchError                    string         `json:"watchError"`
+func (f SyncthingFolder) Title() string {
+	return f.config.Label
+}
+
+func (f SyncthingFolder) Description() string {
+	return statusLabel(f)
 }
 
 func fetchBytes(url string, apiKey string, foo any) error {
@@ -387,47 +361,3 @@ func fetchBytes(url string, apiKey string, foo any) error {
 //		}
 //		defer f.Close()
 //	}
-
-func mapValues[T any](m map[string]T) []T {
-	values := make([]T, 0, len(m))
-	for _, v := range m {
-		values = append(values, v)
-	}
-	return values
-}
-
-type Device struct {
-	DeviceID           string `json:"deviceID"`
-	IntroducedBy       string `json:"introducedBy"`
-	EncryptionPassword string `json:"encryptionPassword"`
-}
-
-type MinDiskFree struct {
-	Value float64 `json:"value"`
-	Unit  string  `json:"unit"`
-}
-
-type VersioningParams struct {
-	CleanoutDays string `json:"cleanoutDays"`
-}
-
-type Versioning struct {
-	Type             string           `json:"type"`
-	Params           VersioningParams `json:"params"`
-	CleanupIntervalS int              `json:"cleanupIntervalS"`
-	FsPath           string           `json:"fsPath"`
-	FsType           string           `json:"fsType"`
-}
-
-type XattrFilter struct {
-	Entries            []string `json:"entries"`
-	MaxSingleEntrySize int      `json:"maxSingleEntrySize"`
-	MaxTotalSize       int      `json:"maxTotalSize"`
-}
-
-type SyncthingEvent struct {
-	ID       int       `json:"id"`
-	GlobalID int       `json:"globalID"`
-	Time     time.Time `json:"time"`
-	Type     string    `json:"type"`
-}
