@@ -24,7 +24,6 @@ type errMsg error
 
 // # Useful links
 // https://docs.syncthing.net/dev/rest.html#rest-pagination
-// https://leg100.github.io/en/posts/building-bubbletea-programs/#2-dump-messages-to-a-file
 
 // TODO create const for syncthing ports paths
 // TODO currently we are skipping tls verification for the https://localhost path. What can we do about it
@@ -40,6 +39,7 @@ type model struct {
 
 	// Syncthing DATA
 	syncthingApiKey string
+	version         SyncthingSystemVersion
 	folders         []SyncthingFolder
 	status          SyncthingSystemStatus
 	connections     SyncthingSystemConnections
@@ -98,6 +98,7 @@ func (m model) Init() tea.Cmd {
 		fetchSystemStatus(m.syncthingApiKey),
 		fetchSystemConnections(m.syncthingApiKey),
 		fetchDevices(m.syncthingApiKey),
+		fetchSystemVersion(m.syncthingApiKey),
 		tea.Tick(REFETCH_STATUS_INTERVAL, func(time.Time) tea.Msg { return TickedRefetchStatusMsg{} }),
 	)
 }
@@ -173,6 +174,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.status = msg.status
 		m.thisDevice.name = thisDeviceName(m.status.MyID, m.devices)
+		return m, nil
+
+	case FetchedSystemVersionMsg:
+		if msg.err != nil {
+			// TODO create system status error ux
+			m.err = msg.err
+			return m, nil
+		}
+		m.version = msg.version
 		return m, nil
 	case FetchedSystemConnectionsMsg:
 		if msg.err != nil {
@@ -265,6 +275,7 @@ func (m model) View() string {
 			m.status,
 			m.connections,
 			lo.Map(m.folders, func(f SyncthingFolder, _ int) SyncthingFolderStatus { return f.status }),
+			m.version,
 			m.thisDevice),
 	)
 
@@ -275,6 +286,7 @@ func viewStatus(
 	status SyncthingSystemStatus,
 	connections SyncthingSystemConnections,
 	folders []SyncthingFolderStatus,
+	version SyncthingSystemVersion,
 	thisDevice thisDeviceModel) string {
 	foo := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder(), true).
@@ -310,6 +322,7 @@ func viewStatus(
 				humanize.IBytes(uint64(totalBytes))),
 			fmt.Sprintf("Uptime %s",
 				HumanizeDuration(int(status.Uptime))),
+			fmt.Sprintf("Version %s, %s (%s)", version.Version, osName(version.OS), archName(version.Arch)),
 		),
 	)
 }
@@ -333,6 +346,60 @@ func ViewFolders(folders []SyncthingFolder) string {
 	}
 
 	return foo
+}
+
+func osName(os string) string {
+	switch os {
+	case "darwin":
+		return "macOs"
+	case "dragonfly":
+		return "DragonFly BSD"
+	case "freebsd":
+		return "FreeBSD"
+	case "openbsd":
+		return "OpenBSD"
+	case "netbsd":
+		return "NetBSD"
+	case "linux":
+		return "Linux"
+	case "windows":
+		return "Windows"
+	case "solaris":
+		return "Solaris"
+	}
+
+	return "unknown os"
+}
+
+func archName(arch string) string {
+	switch arch {
+	case "386":
+		return "32-bit Intel/AMD"
+	case "amd64":
+		return "64-bit Intel/AMD"
+	case "arm":
+		return "32-bit ARM"
+	case "arm64":
+		return "64-bit ARM"
+	case "ppc64":
+		return "64-bit PowerPC"
+	case "ppc64le":
+		return "64-bit PowerPC (LE)"
+	case "mips":
+		return "32-bit MIPS"
+	case "mipsle":
+		return "32-bit MIPS (LE)"
+	case "mips64":
+		return "64-bit MIPS"
+	case "mips64le":
+		return "64-bit MIPS (LE)"
+	case "riscv64":
+		return "64-bit RISC-V"
+	case "s390x":
+		return "64-bit z/Architecture"
+	}
+
+	return "unknown arch"
 }
 
 // TODO return colors somehow
@@ -389,6 +456,11 @@ type FetchedEventsMsg struct {
 type FetchedSystemStatusMsg struct {
 	status SyncthingSystemStatus
 	err    error
+}
+
+type FetchedSystemVersionMsg struct {
+	version SyncthingSystemVersion
+	err     error
 }
 
 type FetchedSystemConnectionsMsg struct {
@@ -460,12 +532,24 @@ func fetchSystemStatus(apiKey string) tea.Cmd {
 	}
 }
 
+func fetchSystemVersion(apiKey string) tea.Cmd {
+	return func() tea.Msg {
+		var version SyncthingSystemVersion
+		err := fetchBytes("http://localhost:8384/rest/system/version", apiKey, &version)
+		if err != nil {
+			return FetchedSystemVersionMsg{err: err}
+		}
+
+		return FetchedSystemVersionMsg{version: version}
+	}
+}
+
 func fetchSystemConnections(apiKey string) tea.Cmd {
 	return func() tea.Msg {
 		var connections SyncthingSystemConnections
 		err := fetchBytes("http://localhost:8384/rest/system/connections", apiKey, &connections)
 		if err != nil {
-			return FetchedSystemStatusMsg{err: err}
+			return FetchedSystemConnectionsMsg{err: err}
 		}
 
 		return FetchedSystemConnectionsMsg{connections: connections}
@@ -501,7 +585,7 @@ func (f SyncthingFolder) Description() string {
 	return statusLabel(f)
 }
 
-func fetchBytes(url string, apiKey string, foo any) error {
+func fetchBytes(url string, apiKey string, bodyType any) error {
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -527,7 +611,7 @@ func fetchBytes(url string, apiKey string, foo any) error {
 		return err
 	}
 
-	err = json.Unmarshal(body, &foo)
+	err = json.Unmarshal(body, &bodyType)
 	if err != nil {
 		return fmt.Errorf("Error unmarshalling JSON: %w", err)
 	}

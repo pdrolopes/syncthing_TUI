@@ -212,3 +212,20 @@ type IgnoredFolder struct {
 	ID    string    `json:"id"`
 	Label string    `json:"label"`
 }
+
+type SyncthingSystemVersion struct {
+	Arch        string    `json:"arch"`
+	Codename    string    `json:"codename"`
+	Container   bool      `json:"container"`
+	Date        time.Time `json:"date"`
+	Extra       string    `json:"extra"`
+	IsBeta      bool      `json:"isBeta"`
+	IsCandidate bool      `json:"isCandidate"`
+	IsRelease   bool      `json:"isRelease"`
+	LongVersion string    `json:"longVersion"`
+	OS          string    `json:"os"`
+	Stamp       string    `json:"stamp"`
+	Tags        []string  `json:"tags"`
+	User        string    `json:"user"`
+	Version     string    `json:"version"`
+}
