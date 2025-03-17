@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/lipgloss/table"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/dustin/go-humanize"
 	"github.com/samber/lo"
@@ -30,7 +31,6 @@ type errMsg error
 
 type model struct {
 	dump       io.Writer
-	list       list.Model
 	loading    bool
 	err        error
 	width      int
@@ -61,15 +61,6 @@ var quitKeys = key.NewBinding(
 	key.WithHelp("", "press q to quit"),
 )
 
-var down = key.NewBinding(
-	key.WithKeys("down", "j"),
-	key.WithHelp("", "press q to quit"),
-)
-var up = key.NewBinding(
-	key.WithKeys("up", "k"),
-	key.WithHelp("", "press q to quit"),
-)
-
 func initModel() model {
 	var dump *os.File
 	if _, ok := os.LookupEnv("DEBUG"); ok {
@@ -81,10 +72,7 @@ func initModel() model {
 	}
 	syncthingApiKey := os.Getenv("SYNCTHING_API_KEY")
 
-	newList := list.New(make([]list.Item, 0), list.NewDefaultDelegate(), 30, 20)
-	newList.ResetSelected()
 	return model{
-		list:            newList,
 		loading:         true,
 		syncthingApiKey: syncthingApiKey,
 		dump:            dump,
@@ -114,12 +102,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case key.Matches(msg, quitKeys):
 			return m, tea.Quit
-		case key.Matches(msg, down):
-			m.list.CursorDown()
-			return m, nil
-		case key.Matches(msg, up):
-			m.list.CursorUp()
-			return m, nil
 		default:
 			return m, nil
 		}
@@ -140,10 +122,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for _, f := range msg.folders {
 			items = append(items, f)
 		}
-		m.list.Title = fmt.Sprintf("Folders (%d)", len(msg.folders))
-		m.list.SetItems(items)
-		m.list.Styles.Title = titleStyle
-		m.list.SetShowHelp(false)
 		m.folders = msg.folders
 		return m, nil
 	case FetchedEventsMsg:
@@ -225,9 +203,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	default:
 		var cmds []tea.Cmd
-		newListModel, cmd := m.list.Update(msg)
-		m.list = newListModel
-		cmds = append(cmds, cmd)
 		return m, tea.Batch(cmds...)
 	}
 }
@@ -243,18 +218,6 @@ func thisDeviceName(myID string, devices []SyncthingDevice) string {
 }
 
 // ------------------ VIEW --------------------------
-var (
-	appStyle = lipgloss.NewStyle().Padding(1, 2)
-
-	titleStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#FFFDF5")).
-			Background(lipgloss.Color("#25A065")).
-			Padding(0, 1)
-
-	statusMessageStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.AdaptiveColor{Light: "#04B575", Dark: "#04B575"}).
-				Render
-)
 
 func (m model) View() string {
 	if m.err != nil {
@@ -269,17 +232,17 @@ func (m model) View() string {
 	// 	str := fmt.Sprintf("\n\n   %s Loading syncthing data... %s\n\n", m.spinner.View(), quitKeys.Help().Desc)
 	// 	return str
 	// }
-	return lipgloss.JoinHorizontal(lipgloss.Top,
-		appStyle.Render(m.list.View()),
-		viewStatus(
-			m.status,
-			m.connections,
-			lo.Map(m.folders, func(f SyncthingFolder, _ int) SyncthingFolderStatus { return f.status }),
-			m.version,
-			m.thisDevice),
-	)
+	return lipgloss.NewStyle().MaxHeight(m.height).Render(
+		lipgloss.JoinHorizontal(lipgloss.Top,
+			ViewFolders(m.folders),
+			viewStatus(
+				m.status,
+				m.connections,
+				lo.Map(m.folders, func(f SyncthingFolder, _ int) SyncthingFolderStatus { return f.status }),
+				m.version,
+				m.thisDevice),
+		))
 
-	// return ViewFolders(slices.Collect(m.folders.Values()))
 }
 
 func viewStatus(
@@ -291,7 +254,7 @@ func viewStatus(
 	foo := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder(), true).
 		PaddingRight(1).
-		PaddingLeft(2).
+		PaddingLeft(1).
 		Width(50)
 	totalFiles := lo.SumBy(folders, func(f SyncthingFolderStatus) int { return f.LocalFiles })
 	totalDirectories := lo.SumBy(folders, func(f SyncthingFolderStatus) int { return f.LocalDirectories })
@@ -303,49 +266,94 @@ func viewStatus(
 		inBytesPerSecond = thisDevice.deltaBytesIn / thisDevice.deltaTime
 		outBytesPerSecond = thisDevice.deltaBytesOut / thisDevice.deltaTime
 	}
+	t := table.New().
+		Border(lipgloss.HiddenBorder()).
+		Width(foo.GetWidth()-foo.GetHorizontalPadding()).
+		StyleFunc(func(row, col int) lipgloss.Style {
+			if col == 1 {
+				return lipgloss.NewStyle().Align(lipgloss.Right)
+			}
+			return lipgloss.NewStyle()
+		}).Rows(
+		[]string{"Download rate",
+			fmt.Sprintf("%s/s (%s)",
+				humanize.IBytes(uint64(inBytesPerSecond)),
+				humanize.IBytes(uint64(connections.Total.InBytesTotal)),
+			),
+		},
+		[]string{"Upload rate",
+			fmt.Sprintf("%s/s (%s)",
+				humanize.IBytes(uint64(outBytesPerSecond)),
+				humanize.IBytes(uint64(connections.Total.OutBytesTotal)),
+			),
+		},
+		[]string{"Local State (Total)",
+			fmt.Sprintf("📄 %d 📁 %d 📁 %s",
+				totalFiles,
+				totalDirectories,
+				humanize.IBytes(uint64(totalBytes))),
+		},
+		[]string{"Uptime", HumanizeDuration(int(status.Uptime))},
+		[]string{"Version", fmt.Sprintf("%s, %s (%s)", version.Version, osName(version.OS), archName(version.Arch))},
+	)
 
 	return foo.Render(
 		lipgloss.JoinVertical(
 			lipgloss.Left,
 			thisDevice.name,
-			fmt.Sprintf("download rate %s/s (%s)",
-				humanize.IBytes(uint64(inBytesPerSecond)),
-				humanize.IBytes(uint64(connections.Total.InBytesTotal)),
-			),
-			fmt.Sprintf("upload rate %s/s (%s)",
-				humanize.IBytes(uint64(outBytesPerSecond)),
-				humanize.IBytes(uint64(connections.Total.OutBytesTotal)),
-			),
-			fmt.Sprintf("Local State (Total) 📄 %d 📁 %d 📁 %s",
-				totalFiles,
-				totalDirectories,
-				humanize.IBytes(uint64(totalBytes))),
-			fmt.Sprintf("Uptime %s",
-				HumanizeDuration(int(status.Uptime))),
-			fmt.Sprintf("Version %s, %s (%s)", version.Version, osName(version.OS), archName(version.Arch)),
+			t.Render(),
 		),
 	)
 }
 
 func ViewFolders(folders []SyncthingFolder) string {
+
+	views := lo.Map(folders, func(item SyncthingFolder, index int) string {
+		return ViewFolder(item, false)
+	})
+
+	return lipgloss.JoinVertical(lipgloss.Left, views...)
+
+}
+func ViewFolder(folder SyncthingFolder, expanded bool) string {
 	folderStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder(), true).
-		PaddingRight(2).
-		PaddingLeft(2).
-		Width(60).
-		Align(lipgloss.Left)
+		Border(lipgloss.ThickBorder(), true).
+		BorderForeground(folderColor(folder)).
+		Width(60)
 
-	foo := ""
-	for _, folder := range folders {
-		foo += folderStyle.Render(
-			lipgloss.NewStyle().Width(40).Align(lipgloss.Left).Render(folder.config.Label),
-			lipgloss.NewStyle().Width(15).Align(lipgloss.Right).Render(statusLabel(folder)),
-		)
+	// TODO this borderless table to so reusable table
+	t := table.New().BorderTop(false).BorderBottom(false).BorderLeft(false).BorderRight(false).BorderColumn(false).
+		Width(folderStyle.GetWidth()).
+		StyleFunc(func(row, col int) lipgloss.Style {
+			if col == 1 {
+				return lipgloss.NewStyle().Align(lipgloss.Right)
+			}
+			return lipgloss.NewStyle()
+		}).Row(folder.config.Label, lipgloss.NewStyle().Foreground(folderColor(folder)).Render(statusLabel(folder)))
 
-		foo += "\n"
+	if !expanded {
+		return folderStyle.Render(t.Render())
+	} else {
+		content := table.New().Border(lipgloss.HiddenBorder()).Width(folderStyle.GetWidth()).StyleFunc(func(row, col int) lipgloss.Style {
+			if col == 1 {
+				return lipgloss.NewStyle().Align(lipgloss.Right)
+			}
+			return lipgloss.NewStyle()
+		}).
+			Row("Folder ID", folder.config.ID).
+			Row("Folder Path", folder.config.Path).
+			Row("Folder Type", folder.config.Type). // TODO create custom label
+			Row("Rescans", fmt.Sprint(folder.config.RescanIntervalS)).
+			Row("File Pull Order", fmt.Sprint(folder.config.Order)).
+			Row("File Versioning", fmt.Sprint(folder.config.Versioning.Type)).
+			Row("Shared With", fmt.Sprint(folder.config.RescanIntervalS))
+
+		return folderStyle.Render(lipgloss.JoinVertical(lipgloss.Left,
+			t.Render(),
+			content.Render(),
+		))
+
 	}
-
-	return foo
 }
 
 func osName(os string) string {
@@ -402,36 +410,79 @@ func archName(arch string) string {
 	return "unknown arch"
 }
 
-// TODO return colors somehow
-func statusLabel(foo SyncthingFolder) string {
+// Define a custom type for the enum
+type FolderState int
+
+// Use iota to define constants for each day
+const (
+	Idle     FolderState = iota // 0
+	Syncing                     // 1
+	Error                       // 2
+	Paused                      // 3
+	Unshared                    // 4
+	Scanning                    // 5
+)
+
+func folderState(foo SyncthingFolder) FolderState {
 	if foo.status.State == "syncing" {
-		return "Syncing"
+		return Syncing
 	}
 	if foo.status.State == "scanning" {
-		return lipgloss.
-			NewStyle().
-			Foreground(lipgloss.
-				Color("#087331")).
-			Render("Scanning")
+		return Scanning
 	}
 
 	if len(foo.status.Invalid) > 0 || len(foo.status.Error) > 0 {
-		return "Error"
+		return Error
 	}
 
 	if foo.config.Paused {
-		return "Paused"
+		return Paused
 	}
 
 	if len(foo.config.Devices) == 1 {
-		return "Unshared"
+		return Unshared
 	}
 
-	return lipgloss.
-		NewStyle().
-		Foreground(lipgloss.
-			Color("#087331")).
-		Render("Up to Date")
+	return Idle
+}
+
+// TODO return colors somehow
+func statusLabel(foo SyncthingFolder) string {
+	switch folderState(foo) {
+	case Idle:
+		return "Up to Date"
+	case Scanning:
+		return "Scanning"
+	case Syncing:
+		return "Syncing"
+	case Paused:
+		return "Paused"
+	case Unshared:
+		return "Unshared"
+	case Error:
+		return "Error"
+	}
+
+	return ""
+}
+
+func folderColor(foo SyncthingFolder) lipgloss.AdaptiveColor {
+	switch folderState(foo) {
+	case Idle:
+		return lipgloss.AdaptiveColor{Light: "#75e4af", Dark: "#75e4af"}
+	case Scanning:
+		return lipgloss.AdaptiveColor{Light: "#58b5dc", Dark: "#58b5dc"}
+	case Syncing:
+		return lipgloss.AdaptiveColor{Light: "#58b5dc", Dark: "#58b5dc"}
+	case Paused:
+		return lipgloss.AdaptiveColor{Light: "", Dark: ""}
+	case Unshared:
+		return lipgloss.AdaptiveColor{Light: "", Dark: ""}
+	case Error:
+		return lipgloss.AdaptiveColor{Light: "#ff7092", Dark: "#ff7092"}
+	}
+
+	return lipgloss.AdaptiveColor{Light: "", Dark: ""}
 }
 
 func main() {
