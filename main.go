@@ -46,6 +46,7 @@ type model struct {
 	status          SyncthingSystemStatus
 	connections     SyncthingSystemConnections
 	devices         []SyncthingDevice
+	folderStats     map[string]FolderStat
 }
 
 type thisDeviceModel struct {
@@ -88,6 +89,7 @@ func (m model) Init() tea.Cmd {
 		fetchSystemStatus(m.syncthingApiKey),
 		fetchSystemConnections(m.syncthingApiKey),
 		fetchDevices(m.syncthingApiKey),
+		fetchFolderStats(m.syncthingApiKey),
 		fetchSystemVersion(m.syncthingApiKey),
 		tea.Tick(REFETCH_STATUS_INTERVAL, func(time.Time) tea.Msg { return TickedRefetchStatusMsg{} }),
 	)
@@ -113,13 +115,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		for _, f := range m.folders {
+		for i, f := range m.folders {
 			if zone.Get(f.config.ID).InBounds(msg) {
 				if m.expandedFolder == f.config.ID {
 					m.expandedFolder = ""
 				} else {
 					m.expandedFolder = f.config.ID
 				}
+				break
+			}
+
+			if zone.Get(f.config.ID + "/pause").InBounds(msg) {
+				m.folders[i].config.Paused = true
 				break
 			}
 		}
@@ -207,6 +214,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.devices = msg.devices
 		m.thisDevice.name = thisDeviceName(m.status.MyID, m.devices)
 		return m, nil
+	case FetchedFolderStats:
+		if msg.err != nil {
+			// TODO create system status error ux
+			m.err = msg.err
+			return m, nil
+		}
+		m.folderStats = msg.folderStats
+		return m, nil
 
 	case TickedRefetchStatusMsg:
 		cmds := tea.Batch(
@@ -253,7 +268,7 @@ func (m model) View() string {
 	// }
 	return zone.Scan(lipgloss.NewStyle().MaxHeight(m.height).Render(
 		lipgloss.JoinHorizontal(lipgloss.Top,
-			ViewFolders(m.folders, m.expandedFolder),
+			ViewFolders(m.folders, m.folderStats, m.expandedFolder),
 			viewStatus(
 				m.status,
 				m.connections,
@@ -325,16 +340,16 @@ func viewStatus(
 	)
 }
 
-func ViewFolders(folders []SyncthingFolder, expandedFolder string) string {
+func ViewFolders(folders []SyncthingFolder, stats map[string]FolderStat, expandedFolder string) string {
 
 	views := lo.Map(folders, func(item SyncthingFolder, index int) string {
-		return ViewFolder(item, item.config.ID == expandedFolder)
+		return ViewFolder(item, stats[item.config.ID], item.config.ID == expandedFolder)
 	})
 
 	return lipgloss.JoinVertical(lipgloss.Left, views...)
 
 }
-func ViewFolder(folder SyncthingFolder, expanded bool) string {
+func ViewFolder(folder SyncthingFolder, stat FolderStat, expanded bool) string {
 	folderStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder(), true).
 		BorderForeground(folderColor(folder)).
@@ -351,7 +366,17 @@ func ViewFolder(folder SyncthingFolder, expanded bool) string {
 		}).Row(folder.config.Label, lipgloss.NewStyle().Foreground(folderColor(folder)).Render(statusLabel(folder)))
 
 	content := ""
+	footer := ""
 	if expanded {
+		foo := lo.Ternary(folder.config.FsWatcherEnabled, "Enabled", "Disabled")
+
+		footerStyle := lipgloss.NewStyle().Width(folderStyle.GetWidth()).Align(lipgloss.Right)
+		btnStyle := lipgloss.NewStyle().Border(lipgloss.NormalBorder(), true)
+
+		pauseBtn := zone.Mark(folder.config.ID+"/pause", btnStyle.Render(lo.Ternary(folderState(folder) == Paused, "Resume", "Pause")))
+
+		footer = footerStyle.Render(pauseBtn)
+
 		content = table.New().Border(lipgloss.HiddenBorder()).Width(folderStyle.GetWidth()).StyleFunc(func(row, col int) lipgloss.Style {
 			if col == 1 {
 				return lipgloss.NewStyle().Align(lipgloss.Right)
@@ -361,10 +386,24 @@ func ViewFolder(folder SyncthingFolder, expanded bool) string {
 			Row("Folder ID", folder.config.ID).
 			Row("Folder Path", folder.config.Path).
 			Row("Folder Type", folder.config.Type). // TODO create custom label
-			Row("Rescans", fmt.Sprint(folder.config.RescanIntervalS)).
+			Row("Global State",
+				fmt.Sprintf("📄 %d 📁 %d 📁 %s",
+					folder.status.GlobalFiles,
+					folder.status.GlobalDirectories,
+					humanize.IBytes(uint64(folder.status.GlobalBytes))),
+			).
+			Row("Local State",
+				fmt.Sprintf("📄 %d 📁 %d 📁 %s",
+					folder.status.LocalFiles,
+					folder.status.LocalDirectories,
+					humanize.IBytes(uint64(folder.status.LocalBytes))),
+			).
+			Row("Rescans ", fmt.Sprintf("%s  %s", HumanizeDuration(folder.config.RescanIntervalS), foo)).
 			Row("File Pull Order", fmt.Sprint(folder.config.Order)).
 			Row("File Versioning", fmt.Sprint(folder.config.Versioning.Type)).
 			Row("Shared With", fmt.Sprint(folder.config.RescanIntervalS)).
+			Row("Last Scan", fmt.Sprint(stat.LastScan)).
+			Row("Last File", fmt.Sprint(stat.LastFile.Filename)).
 			Render()
 
 	}
@@ -372,6 +411,7 @@ func ViewFolder(folder SyncthingFolder, expanded bool) string {
 	return folderStyle.Render(lipgloss.JoinVertical(lipgloss.Left,
 		zone.Mark(folder.config.ID, t.Render()),
 		content,
+		footer,
 	))
 }
 
@@ -544,6 +584,11 @@ type FetchedDevicesMsg struct {
 	err     error
 }
 
+type FetchedFolderStats struct {
+	folderStats map[string]FolderStat
+	err         error
+}
+
 type TickedRefetchStatusMsg struct{}
 
 func fetchFolders(apiKey string) tea.Cmd {
@@ -636,6 +681,18 @@ func fetchDevices(apiKey string) tea.Cmd {
 		}
 
 		return FetchedDevicesMsg{devices: devices}
+	}
+}
+
+func fetchFolderStats(apiKey string) tea.Cmd {
+	return func() tea.Msg {
+		var folderStats map[string]FolderStat
+		err := fetchBytes("http://localhost:8384/rest/stats/folder", apiKey, &folderStats)
+		if err != nil {
+			return FetchedFolderStats{err: err}
+		}
+
+		return FetchedFolderStats{folderStats: folderStats}
 	}
 }
 

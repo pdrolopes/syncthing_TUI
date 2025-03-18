@@ -229,3 +229,14 @@ type SyncthingSystemVersion struct {
 	User        string    `json:"user"`
 	Version     string    `json:"version"`
 }
+
+type LastFile struct {
+	At       time.Time `json:"at"`
+	Filename string    `json:"filename"`
+	Deleted  bool      `json:"deleted"`
+}
+
+type FolderStat struct {
+	LastFile LastFile  `json:"lastFile"`
+	LastScan time.Time `json:"lastScan"`
+}
