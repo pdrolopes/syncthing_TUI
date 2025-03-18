@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
@@ -144,10 +143,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		items := make([]list.Item, 0)
-		for _, f := range msg.folders {
-			items = append(items, f)
-		}
 		m.folders = msg.folders
 		return m, nil
 	case FetchedEventsMsg:
@@ -276,7 +271,6 @@ func (m model) View() string {
 				m.version,
 				m.thisDevice),
 		)))
-
 }
 
 func viewStatus(
@@ -284,7 +278,8 @@ func viewStatus(
 	connections SyncthingSystemConnections,
 	folders []SyncthingFolderStatus,
 	version SyncthingSystemVersion,
-	thisDevice thisDeviceModel) string {
+	thisDevice thisDeviceModel,
+) string {
 	foo := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder(), true).
 		PaddingRight(1).
@@ -308,28 +303,28 @@ func viewStatus(
 				return lipgloss.NewStyle().Align(lipgloss.Right)
 			}
 			return lipgloss.NewStyle()
-		}).Rows(
-		[]string{"Download rate",
+		}).
+		Row(
+			"Download rate",
 			fmt.Sprintf("%s/s (%s)",
 				humanize.IBytes(uint64(inBytesPerSecond)),
 				humanize.IBytes(uint64(connections.Total.InBytesTotal)),
 			),
-		},
-		[]string{"Upload rate",
+		).
+		Row("Upload rate",
 			fmt.Sprintf("%s/s (%s)",
 				humanize.IBytes(uint64(outBytesPerSecond)),
 				humanize.IBytes(uint64(connections.Total.OutBytesTotal)),
 			),
-		},
-		[]string{"Local State (Total)",
+		).
+		Row("Local State (Total)",
 			fmt.Sprintf("📄 %d 📁 %d 📁 %s",
 				totalFiles,
 				totalDirectories,
 				humanize.IBytes(uint64(totalBytes))),
-		},
-		[]string{"Uptime", HumanizeDuration(int(status.Uptime))},
-		[]string{"Version", fmt.Sprintf("%s, %s (%s)", version.Version, osName(version.OS), archName(version.Arch))},
-	)
+		).
+		Row("Uptime", HumanizeDuration(int(status.Uptime))).
+		Row("Version", fmt.Sprintf("%s, %s (%s)", version.Version, osName(version.OS), archName(version.Arch)))
 
 	return foo.Render(
 		lipgloss.JoinVertical(
@@ -341,14 +336,13 @@ func viewStatus(
 }
 
 func ViewFolders(folders []SyncthingFolder, stats map[string]FolderStat, expandedFolder string) string {
-
 	views := lo.Map(folders, func(item SyncthingFolder, index int) string {
 		return ViewFolder(item, stats[item.config.ID], item.config.ID == expandedFolder)
 	})
 
 	return lipgloss.JoinVertical(lipgloss.Left, views...)
-
 }
+
 func ViewFolder(folder SyncthingFolder, stat FolderStat, expanded bool) string {
 	folderStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder(), true).
@@ -714,7 +708,6 @@ func (f SyncthingFolder) Description() string {
 }
 
 func fetchBytes(url string, apiKey string, bodyType any) error {
-
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return err

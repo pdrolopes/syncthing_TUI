@@ -32,7 +32,6 @@ func HumanizeDuration(seconds int) string {
 
 	// Calculate minutes
 	minutes := seconds / secondsPerMinute
-	seconds %= secondsPerMinute
 
 	// Build the human-readable string
 	result := ""
