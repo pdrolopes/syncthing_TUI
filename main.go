@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/lipgloss/table"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/dustin/go-humanize"
+	zone "github.com/lrstanley/bubblezone"
 	"github.com/samber/lo"
 )
 
@@ -30,12 +31,13 @@ type errMsg error
 // TODO currently we are skipping tls verification for the https://localhost path. What can we do about it
 
 type model struct {
-	dump       io.Writer
-	loading    bool
-	err        error
-	width      int
-	height     int
-	thisDevice thisDeviceModel
+	dump           io.Writer
+	loading        bool
+	err            error
+	width          int
+	height         int
+	thisDevice     thisDeviceModel
+	expandedFolder string
 
 	// Syncthing DATA
 	syncthingApiKey string
@@ -106,6 +108,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+	case tea.MouseMsg:
+		if msg.Action != tea.MouseActionRelease || msg.Button != tea.MouseButtonLeft {
+			return m, nil
+		}
+
+		for _, f := range m.folders {
+			if zone.Get(f.config.ID).InBounds(msg) {
+				if m.expandedFolder == f.config.ID {
+					m.expandedFolder = ""
+				} else {
+					m.expandedFolder = f.config.ID
+				}
+				break
+			}
+		}
+
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -232,16 +251,16 @@ func (m model) View() string {
 	// 	str := fmt.Sprintf("\n\n   %s Loading syncthing data... %s\n\n", m.spinner.View(), quitKeys.Help().Desc)
 	// 	return str
 	// }
-	return lipgloss.NewStyle().MaxHeight(m.height).Render(
+	return zone.Scan(lipgloss.NewStyle().MaxHeight(m.height).Render(
 		lipgloss.JoinHorizontal(lipgloss.Top,
-			ViewFolders(m.folders),
+			ViewFolders(m.folders, m.expandedFolder),
 			viewStatus(
 				m.status,
 				m.connections,
 				lo.Map(m.folders, func(f SyncthingFolder, _ int) SyncthingFolderStatus { return f.status }),
 				m.version,
 				m.thisDevice),
-		))
+		)))
 
 }
 
@@ -306,10 +325,10 @@ func viewStatus(
 	)
 }
 
-func ViewFolders(folders []SyncthingFolder) string {
+func ViewFolders(folders []SyncthingFolder, expandedFolder string) string {
 
 	views := lo.Map(folders, func(item SyncthingFolder, index int) string {
-		return ViewFolder(item, false)
+		return ViewFolder(item, item.config.ID == expandedFolder)
 	})
 
 	return lipgloss.JoinVertical(lipgloss.Left, views...)
@@ -317,7 +336,7 @@ func ViewFolders(folders []SyncthingFolder) string {
 }
 func ViewFolder(folder SyncthingFolder, expanded bool) string {
 	folderStyle := lipgloss.NewStyle().
-		Border(lipgloss.ThickBorder(), true).
+		Border(lipgloss.RoundedBorder(), true).
 		BorderForeground(folderColor(folder)).
 		Width(60)
 
@@ -331,10 +350,9 @@ func ViewFolder(folder SyncthingFolder, expanded bool) string {
 			return lipgloss.NewStyle()
 		}).Row(folder.config.Label, lipgloss.NewStyle().Foreground(folderColor(folder)).Render(statusLabel(folder)))
 
-	if !expanded {
-		return folderStyle.Render(t.Render())
-	} else {
-		content := table.New().Border(lipgloss.HiddenBorder()).Width(folderStyle.GetWidth()).StyleFunc(func(row, col int) lipgloss.Style {
+	content := ""
+	if expanded {
+		content = table.New().Border(lipgloss.HiddenBorder()).Width(folderStyle.GetWidth()).StyleFunc(func(row, col int) lipgloss.Style {
 			if col == 1 {
 				return lipgloss.NewStyle().Align(lipgloss.Right)
 			}
@@ -346,14 +364,15 @@ func ViewFolder(folder SyncthingFolder, expanded bool) string {
 			Row("Rescans", fmt.Sprint(folder.config.RescanIntervalS)).
 			Row("File Pull Order", fmt.Sprint(folder.config.Order)).
 			Row("File Versioning", fmt.Sprint(folder.config.Versioning.Type)).
-			Row("Shared With", fmt.Sprint(folder.config.RescanIntervalS))
-
-		return folderStyle.Render(lipgloss.JoinVertical(lipgloss.Left,
-			t.Render(),
-			content.Render(),
-		))
+			Row("Shared With", fmt.Sprint(folder.config.RescanIntervalS)).
+			Render()
 
 	}
+
+	return folderStyle.Render(lipgloss.JoinVertical(lipgloss.Left,
+		zone.Mark(folder.config.ID, t.Render()),
+		content,
+	))
 }
 
 func osName(os string) string {
@@ -486,6 +505,7 @@ func folderColor(foo SyncthingFolder) lipgloss.AdaptiveColor {
 }
 
 func main() {
+	zone.NewGlobal()
 	p := tea.NewProgram(initModel(), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		fmt.Println(err)
