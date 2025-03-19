@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -30,13 +32,14 @@ type errMsg error
 // TODO currently we are skipping tls verification for the https://localhost path. What can we do about it
 
 type model struct {
-	dump           io.Writer
-	loading        bool
-	err            error
-	width          int
-	height         int
-	thisDevice     thisDeviceModel
-	expandedFolder string
+	dump              io.Writer
+	loading           bool
+	err               error
+	width             int
+	height            int
+	thisDevice        thisDeviceModel
+	expandedFolder    string
+	ongoingUserAction bool
 
 	// Syncthing DATA
 	syncthingApiKey string
@@ -114,7 +117,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		for i, f := range m.folders {
+		for _, f := range m.folders {
 			if zone.Get(f.config.ID).InBounds(msg) {
 				if m.expandedFolder == f.config.ID {
 					m.expandedFolder = ""
@@ -124,9 +127,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 
-			if zone.Get(f.config.ID + "/pause").InBounds(msg) {
-				m.folders[i].config.Paused = true
-				break
+			if zone.Get(f.config.ID+"/pause").InBounds(msg) && !m.ongoingUserAction {
+				f.config.Paused = !f.config.Paused
+				m.ongoingUserAction = true
+				return m, putFolder(m.syncthingApiKey, f.config)
+			}
+
+			if zone.Get(f.config.ID+"/rescan").InBounds(msg) && !m.ongoingUserAction {
+				m.ongoingUserAction = true
+				return m, rescanFolder(m.syncthingApiKey, f.config.ID)
 			}
 		}
 
@@ -225,6 +234,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			tea.Tick(REFETCH_STATUS_INTERVAL, func(time.Time) tea.Msg { return TickedRefetchStatusMsg{} }),
 		)
 		return m, cmds
+	case UserPostPutEndedMsg:
+		m.err = msg.err
+		m.ongoingUserAction = false
+
+		return m, nil
 
 	case errMsg:
 		m.err = msg
@@ -263,7 +277,7 @@ func (m model) View() string {
 	// }
 	return zone.Scan(lipgloss.NewStyle().MaxHeight(m.height).Render(
 		lipgloss.JoinHorizontal(lipgloss.Top,
-			ViewFolders(m.folders, m.folderStats, m.expandedFolder),
+			ViewFolders(m.folders, m.folderStats, m.devices, m.status.MyID, m.expandedFolder),
 			viewStatus(
 				m.status,
 				m.connections,
@@ -335,48 +349,96 @@ func viewStatus(
 	)
 }
 
-func ViewFolders(folders []SyncthingFolder, stats map[string]FolderStat, expandedFolder string) string {
+func ViewFolders(
+	folders []SyncthingFolder,
+	stats map[string]FolderStat,
+	devices []SyncthingDevice,
+	myID string,
+	expandedFolder string,
+) string {
 	views := lo.Map(folders, func(item SyncthingFolder, index int) string {
-		return ViewFolder(item, stats[item.config.ID], item.config.ID == expandedFolder)
+		return ViewFolder(item, stats[item.config.ID], devices, myID, item.config.ID == expandedFolder)
 	})
 
 	return lipgloss.JoinVertical(lipgloss.Left, views...)
 }
 
-func ViewFolder(folder SyncthingFolder, stat FolderStat, expanded bool) string {
+func ViewFolder(folder SyncthingFolder, stat FolderStat, devices []SyncthingDevice, myID string, expanded bool) string {
 	folderStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder(), true).
 		BorderForeground(folderColor(folder)).
 		Width(60)
 
 	// TODO this borderless table to so reusable table
-	t := table.New().BorderTop(false).BorderBottom(false).BorderLeft(false).BorderRight(false).BorderColumn(false).
+	t := table.New().
+		BorderTop(false).
+		BorderBottom(false).
+		BorderLeft(false).
+		BorderRight(false).
+		BorderColumn(false).
 		Width(folderStyle.GetWidth()).
 		StyleFunc(func(row, col int) lipgloss.Style {
 			if col == 1 {
 				return lipgloss.NewStyle().Align(lipgloss.Right)
 			}
 			return lipgloss.NewStyle()
-		}).Row(folder.config.Label, lipgloss.NewStyle().Foreground(folderColor(folder)).Render(statusLabel(folder)))
+		}).
+		Row(
+			folder.config.Label,
+			lipgloss.NewStyle().Foreground(folderColor(folder)).Render(statusLabel(folder)),
+		)
 
 	content := ""
 	footer := ""
 	if expanded {
 		foo := lo.Ternary(folder.config.FsWatcherEnabled, "Enabled", "Disabled")
 
-		footerStyle := lipgloss.NewStyle().Width(folderStyle.GetWidth()).Align(lipgloss.Right)
-		btnStyle := lipgloss.NewStyle().Border(lipgloss.NormalBorder(), true)
+		footerStyle := lipgloss.
+			NewStyle().
+			Width(folderStyle.GetWidth()).
+			Align(lipgloss.Right)
+		btnStyle := lipgloss.
+			NewStyle().
+			Border(lipgloss.RoundedBorder(), true).
+			PaddingLeft(1).
+			PaddingRight(1)
 
-		pauseBtn := zone.Mark(folder.config.ID+"/pause", btnStyle.Render(lo.Ternary(folderState(folder) == Paused, "Resume", "Pause")))
+		pauseBtn := zone.
+			Mark(folder.config.ID+"/pause",
+				btnStyle.
+					Render(lo.Ternary(
+						folderState(folder) == Paused,
+						"Resume",
+						"Pause",
+					)))
+		rescanBtn := zone.
+			Mark(folder.config.ID+"/rescan",
+				btnStyle.Render("Rescan"))
 
-		footer = footerStyle.Render(pauseBtn)
+		footer = footerStyle.Render(lipgloss.JoinHorizontal(lipgloss.Top, pauseBtn, rescanBtn))
 
-		content = table.New().Border(lipgloss.HiddenBorder()).Width(folderStyle.GetWidth()).StyleFunc(func(row, col int) lipgloss.Style {
-			if col == 1 {
-				return lipgloss.NewStyle().Align(lipgloss.Right)
+		sharedDevices := lo.FilterMap(folder.config.Devices, func(sharedDevice Device, index int) (string, bool) {
+			if sharedDevice.DeviceID == myID {
+				// folder devices includes the host device. we want to ignore our device
+				return "", false
 			}
-			return lipgloss.NewStyle()
-		}).
+			d, found := lo.Find(devices, func(d SyncthingDevice) bool {
+				return d.DeviceID == sharedDevice.DeviceID
+			})
+
+			return d.Name, found
+		})
+
+		content = table.
+			New().
+			Border(lipgloss.HiddenBorder()).
+			Width(folderStyle.GetWidth()).
+			StyleFunc(func(row, col int) lipgloss.Style {
+				if col == 1 {
+					return lipgloss.NewStyle().Align(lipgloss.Right)
+				}
+				return lipgloss.NewStyle()
+			}).
 			Row("Folder ID", folder.config.ID).
 			Row("Folder Path", folder.config.Path).
 			Row("Folder Type", folder.config.Type). // TODO create custom label
@@ -395,7 +457,7 @@ func ViewFolder(folder SyncthingFolder, stat FolderStat, expanded bool) string {
 			Row("Rescans ", fmt.Sprintf("%s  %s", HumanizeDuration(folder.config.RescanIntervalS), foo)).
 			Row("File Pull Order", fmt.Sprint(folder.config.Order)).
 			Row("File Versioning", fmt.Sprint(folder.config.Versioning.Type)).
-			Row("Shared With", fmt.Sprint(folder.config.RescanIntervalS)).
+			Row("Shared With", strings.Join(sharedDevices, ", ")).
 			Row("Last Scan", fmt.Sprint(stat.LastScan)).
 			Row("Last File", fmt.Sprint(stat.LastFile.Filename)).
 			Render()
@@ -585,6 +647,11 @@ type FetchedFolderStats struct {
 
 type TickedRefetchStatusMsg struct{}
 
+type UserPostPutEndedMsg struct {
+	action string
+	err    error
+}
+
 func fetchFolders(apiKey string) tea.Cmd {
 	return func() tea.Msg {
 		var folders []SyncthingFolderConfig
@@ -690,6 +757,22 @@ func fetchFolderStats(apiKey string) tea.Cmd {
 	}
 }
 
+func putFolder(apiKey string, folder SyncthingFolderConfig) tea.Cmd {
+	return func() tea.Msg {
+		err := put("http://localhost:8384/rest/config/folders/"+folder.ID, apiKey, folder)
+		return UserPostPutEndedMsg{err: err, action: "putFolder: " + folder.ID}
+	}
+}
+
+func rescanFolder(apiKey string, folderID string) tea.Cmd {
+	return func() tea.Msg {
+		params := url.Values{}
+		params.Add("folder", folderID)
+		err := post("http://localhost:8384/rest/db/scan/"+"?"+params.Encode(), apiKey)
+		return UserPostPutEndedMsg{err: err, action: "rescanFolder: " + folderID}
+	}
+}
+
 type SyncthingFolder struct {
 	config SyncthingFolderConfig
 	status SyncthingFolderStatus
@@ -736,6 +819,58 @@ func fetchBytes(url string, apiKey string, bodyType any) error {
 	if err != nil {
 		return fmt.Errorf("Error unmarshalling JSON: %w", err)
 	}
+
+	return nil
+}
+
+func put(url string, apiKey string, body any) error {
+	jsonData, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("Error marshalling JSON: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodPut, url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("X-API-Key", apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true, // Skip certificate verification
+			},
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	return nil
+}
+
+func post(url string, apiKey string) error {
+	req, err := http.NewRequest(http.MethodPost, url, nil)
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("X-API-Key", apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true, // Skip certificate verification
+			},
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
 
 	return nil
 }
