@@ -1,4 +1,4 @@
-module github.com/charmbracelet/bubbletea-app-template
+module github.com/pdrolopes/syncthing_TUI
 
 go 1.23.0
 
