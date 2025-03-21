@@ -59,7 +59,11 @@ type thisDeviceModel struct {
 }
 
 // ------------------ constants -----------------------
-const REFETCH_STATUS_INTERVAL = 10 * time.Second
+const (
+	REFETCH_STATUS_INTERVAL = 10 * time.Second
+	PAUSE_ALL_MARK          = "pause-all"
+	RESUME_ALL_MARK         = "resume-all"
+)
 
 var quitKeys = key.NewBinding(
 	key.WithKeys("q", "esc", "ctrl+c"),
@@ -117,6 +121,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseMsg:
 		if msg.Action != tea.MouseActionRelease || msg.Button != tea.MouseButtonLeft {
 			return m, nil
+		}
+
+		if zone.Get(PAUSE_ALL_MARK).InBounds(msg) && !m.ongoingUserAction {
+			pausedFolders := lo.Map(m.config.Folders, func(item SyncthingFolderConfig, index int) SyncthingFolderConfig {
+				item.Paused = true
+				return item
+			})
+			m.ongoingUserAction = true
+			return m, putFolder(m.syncthingApiKey, pausedFolders...)
+		}
+
+		if zone.Get(RESUME_ALL_MARK).InBounds(msg) {
+			resumedFolders := lo.Map(m.config.Folders, func(item SyncthingFolderConfig, index int) SyncthingFolderConfig {
+				item.Paused = false
+				return item
+			})
+			m.ongoingUserAction = true
+			return m, putFolder(m.syncthingApiKey, resumedFolders...)
 		}
 
 		for _, folder := range m.config.Folders {
@@ -366,6 +388,12 @@ func viewStatus(
 	)
 }
 
+var btnStyle = lipgloss.
+	NewStyle().
+	Border(lipgloss.RoundedBorder(), true).
+	PaddingLeft(1).
+	PaddingRight(1)
+
 func ViewFolders(
 	folders []FolderWithStatusAndStats,
 	devices []SyncthingDevice,
@@ -376,7 +404,20 @@ func ViewFolders(
 		return ViewFolder(item, devices, myID, item.config.ID == expandedFolder)
 	})
 
-	return lipgloss.JoinVertical(lipgloss.Left, views...)
+	btns := make([]string, 0)
+	areAllFoldersPaused := lo.EveryBy(folders, func(item FolderWithStatusAndStats) bool { return item.config.Paused })
+	anyFolderPaused := lo.SomeBy(folders, func(item FolderWithStatusAndStats) bool { return item.config.Paused })
+	if !areAllFoldersPaused {
+		btns = append(btns, zone.Mark(PAUSE_ALL_MARK, btnStyle.Render("Pause All")))
+	}
+	if anyFolderPaused {
+		btns = append(btns, zone.Mark(RESUME_ALL_MARK, btnStyle.Render("Resume All")))
+	}
+	btns = append(btns, zone.Mark("add-folder", btnStyle.Render("Add Folder")))
+
+	views = append(views, (lipgloss.JoinHorizontal(lipgloss.Top, btns...)))
+
+	return lipgloss.JoinVertical(lipgloss.Right, views...)
 }
 
 func ViewFolder(folder FolderWithStatusAndStats, devices []SyncthingDevice, myID string, expanded bool) string {
@@ -413,11 +454,6 @@ func ViewFolder(folder FolderWithStatusAndStats, devices []SyncthingDevice, myID
 			NewStyle().
 			Width(folderStyle.GetWidth()).
 			Align(lipgloss.Right)
-		btnStyle := lipgloss.
-			NewStyle().
-			Border(lipgloss.RoundedBorder(), true).
-			PaddingLeft(1).
-			PaddingRight(1)
 
 		pauseBtn := zone.
 			Mark(folder.config.ID+"/pause",
@@ -769,10 +805,11 @@ func fetchFolderStats(apiKey string) tea.Cmd {
 	}
 }
 
-func putFolder(apiKey string, folder SyncthingFolderConfig) tea.Cmd {
+func putFolder(apiKey string, folders ...SyncthingFolderConfig) tea.Cmd {
 	return func() tea.Msg {
-		err := put("http://localhost:8384/rest/config/folders/"+folder.ID, apiKey, folder)
-		return UserPostPutEndedMsg{err: err, action: "putFolder: " + folder.ID}
+		err := put("http://localhost:8384/rest/config/folders/", apiKey, folders)
+		ids := strings.Join(lo.Map(folders, func(item SyncthingFolderConfig, index int) string { return item.ID }), ", ")
+		return UserPostPutEndedMsg{err: err, action: "putFolder: " + ids}
 	}
 }
 
