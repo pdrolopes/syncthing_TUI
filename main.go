@@ -43,12 +43,12 @@ type model struct {
 
 	// Syncthing DATA
 	syncthingApiKey string
+	config          Config
 	version         SyncthingSystemVersion
-	folders         []SyncthingFolder
 	status          SyncthingSystemStatus
 	connections     SyncthingSystemConnections
-	devices         []SyncthingDevice
 	folderStats     map[string]FolderStat
+	folderStatuses  map[string]SyncthingFolderStatus
 }
 
 type thisDeviceModel struct {
@@ -81,18 +81,20 @@ func initModel() model {
 		loading:         true,
 		syncthingApiKey: syncthingApiKey,
 		dump:            dump,
+		folderStatuses:  make(map[string]SyncthingFolderStatus),
 	}
 }
 
 func (m model) Init() tea.Cmd {
 	return tea.Batch(
-		fetchFolders(m.syncthingApiKey),
+		fetchConfig(m.syncthingApiKey),
 		fetchEvents(m.syncthingApiKey, 0),
-		fetchSystemStatus(m.syncthingApiKey),
-		fetchSystemConnections(m.syncthingApiKey),
-		fetchDevices(m.syncthingApiKey),
 		fetchFolderStats(m.syncthingApiKey),
+		// fetchFolders(m.syncthingApiKey),
+		fetchSystemConnections(m.syncthingApiKey),
+		fetchSystemStatus(m.syncthingApiKey),
 		fetchSystemVersion(m.syncthingApiKey),
+		tea.SetWindowTitle("tui-syncthing"),
 		tea.Tick(REFETCH_STATUS_INTERVAL, func(time.Time) tea.Msg { return TickedRefetchStatusMsg{} }),
 	)
 }
@@ -117,25 +119,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		for _, f := range m.folders {
-			if zone.Get(f.config.ID).InBounds(msg) {
-				if m.expandedFolder == f.config.ID {
+		for _, folder := range m.config.Folders {
+			if zone.Get(folder.ID).InBounds(msg) {
+				if m.expandedFolder == folder.ID {
 					m.expandedFolder = ""
 				} else {
-					m.expandedFolder = f.config.ID
+					m.expandedFolder = folder.ID
 				}
 				break
 			}
 
-			if zone.Get(f.config.ID+"/pause").InBounds(msg) && !m.ongoingUserAction {
-				f.config.Paused = !f.config.Paused
+			if zone.Get(folder.ID+"/pause").InBounds(msg) && !m.ongoingUserAction {
+				folder.Paused = !folder.Paused
 				m.ongoingUserAction = true
-				return m, putFolder(m.syncthingApiKey, f.config)
+				return m, putFolder(m.syncthingApiKey, folder)
 			}
 
-			if zone.Get(f.config.ID+"/rescan").InBounds(msg) && !m.ongoingUserAction {
+			if zone.Get(folder.ID+"/rescan").InBounds(msg) && !m.ongoingUserAction {
 				m.ongoingUserAction = true
-				return m, rescanFolder(m.syncthingApiKey, f.config.ID)
+				return m, rescanFolder(m.syncthingApiKey, folder.ID)
 			}
 		}
 
@@ -145,15 +147,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		return m, nil
 
-	case FetchedFoldersMsg:
-		m.loading = false
-		if msg.err != nil {
-			m.err = msg.err
-			return m, nil
-		}
-
-		m.folders = msg.folders
-		return m, nil
 	case FetchedEventsMsg:
 		if msg.err != nil {
 			// TODO figure out what to do if event errors
@@ -167,7 +160,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds := make([]tea.Cmd, 0)
 		for _, e := range msg.events {
 			if e.Type == "StateChanged" || e.Type == "FolderPaused" {
-				cmds = append(cmds, fetchFolders(m.syncthingApiKey))
+				cmds = append(cmds, fetchConfig(m.syncthingApiKey))
 				break
 			}
 		}
@@ -181,7 +174,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.status = msg.status
-		m.thisDevice.name = thisDeviceName(m.status.MyID, m.devices)
+		m.thisDevice.name = thisDeviceName(m.status.MyID, m.config.Devices)
 		return m, nil
 
 	case FetchedSystemVersionMsg:
@@ -209,15 +202,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.connections = msg.connections
 		return m, nil
-	case FetchedDevicesMsg:
-		if msg.err != nil {
-			// TODO create system status error ux
-			m.err = msg.err
-			return m, nil
-		}
-		m.devices = msg.devices
-		m.thisDevice.name = thisDeviceName(m.status.MyID, m.devices)
-		return m, nil
 	case FetchedFolderStats:
 		if msg.err != nil {
 			// TODO create system status error ux
@@ -238,6 +222,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg.err
 		m.ongoingUserAction = false
 
+		return m, nil
+
+	case FetchedConfig:
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		m.config = msg.config
+		m.thisDevice.name = thisDeviceName(m.status.MyID, msg.config.Devices)
+		cmds := lo.Map(m.config.Folders, func(folder SyncthingFolderConfig, index int) tea.Cmd {
+			return fetchFolderStatus(m.syncthingApiKey, folder.ID)
+		})
+
+		return m, tea.Batch(cmds...)
+	case FetchedFolderStatus:
+		if msg.err != nil {
+			delete(m.folderStatuses, msg.id)
+			return m, nil
+		}
+
+		m.folderStatuses[msg.id] = msg.folder
 		return m, nil
 
 	case errMsg:
@@ -275,13 +280,25 @@ func (m model) View() string {
 	// 	str := fmt.Sprintf("\n\n   %s Loading syncthing data... %s\n\n", m.spinner.View(), quitKeys.Help().Desc)
 	// 	return str
 	// }
+
+	folders := lo.Map(m.config.Folders, func(folder SyncthingFolderConfig, index int) FolderWithStatusAndStats {
+		status, hasStatus := m.folderStatuses[folder.ID]
+		stats, hasStats := m.folderStats[folder.ID]
+		return FolderWithStatusAndStats{
+			config:    folder,
+			status:    status,
+			hasStatus: hasStatus,
+			stats:     stats,
+			hasStats:  hasStats,
+		}
+	})
 	return zone.Scan(lipgloss.NewStyle().MaxHeight(m.height).Render(
 		lipgloss.JoinHorizontal(lipgloss.Top,
-			ViewFolders(m.folders, m.folderStats, m.devices, m.status.MyID, m.expandedFolder),
+			ViewFolders(folders, m.config.Devices, m.status.MyID, m.expandedFolder),
 			viewStatus(
 				m.status,
 				m.connections,
-				lo.Map(m.folders, func(f SyncthingFolder, _ int) SyncthingFolderStatus { return f.status }),
+				lo.Values(m.folderStatuses),
 				m.version,
 				m.thisDevice),
 		)))
@@ -350,20 +367,19 @@ func viewStatus(
 }
 
 func ViewFolders(
-	folders []SyncthingFolder,
-	stats map[string]FolderStat,
+	folders []FolderWithStatusAndStats,
 	devices []SyncthingDevice,
 	myID string,
 	expandedFolder string,
 ) string {
-	views := lo.Map(folders, func(item SyncthingFolder, index int) string {
-		return ViewFolder(item, stats[item.config.ID], devices, myID, item.config.ID == expandedFolder)
+	views := lo.Map(folders, func(item FolderWithStatusAndStats, index int) string {
+		return ViewFolder(item, devices, myID, item.config.ID == expandedFolder)
 	})
 
 	return lipgloss.JoinVertical(lipgloss.Left, views...)
 }
 
-func ViewFolder(folder SyncthingFolder, stat FolderStat, devices []SyncthingDevice, myID string, expanded bool) string {
+func ViewFolder(folder FolderWithStatusAndStats, devices []SyncthingDevice, myID string, expanded bool) string {
 	folderStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder(), true).
 		BorderForeground(folderColor(folder)).
@@ -417,7 +433,7 @@ func ViewFolder(folder SyncthingFolder, stat FolderStat, devices []SyncthingDevi
 
 		footer = footerStyle.Render(lipgloss.JoinHorizontal(lipgloss.Top, pauseBtn, rescanBtn))
 
-		sharedDevices := lo.FilterMap(folder.config.Devices, func(sharedDevice Device, index int) (string, bool) {
+		sharedDevices := lo.FilterMap(folder.config.Devices, func(sharedDevice FolderDevice, index int) (string, bool) {
 			if sharedDevice.DeviceID == myID {
 				// folder devices includes the host device. we want to ignore our device
 				return "", false
@@ -458,8 +474,8 @@ func ViewFolder(folder SyncthingFolder, stat FolderStat, devices []SyncthingDevi
 			Row("File Pull Order", fmt.Sprint(folder.config.Order)).
 			Row("File Versioning", fmt.Sprint(folder.config.Versioning.Type)).
 			Row("Shared With", strings.Join(sharedDevices, ", ")).
-			Row("Last Scan", fmt.Sprint(stat.LastScan)).
-			Row("Last File", fmt.Sprint(stat.LastFile.Filename)).
+			Row("Last Scan", fmt.Sprint(folder.stats.LastScan)).
+			Row("Last File", fmt.Sprint(folder.stats.LastFile.Filename)).
 			Render()
 
 	}
@@ -530,15 +546,16 @@ type FolderState int
 
 // Use iota to define constants for each day
 const (
-	Idle     FolderState = iota // 0
-	Syncing                     // 1
-	Error                       // 2
-	Paused                      // 3
-	Unshared                    // 4
-	Scanning                    // 5
+	Idle FolderState = iota
+	Syncing
+	Error
+	Paused
+	Unshared
+	Scanning
+	Unknown
 )
 
-func folderState(foo SyncthingFolder) FolderState {
+func folderState(foo FolderWithStatusAndStats) FolderState {
 	if foo.status.State == "syncing" {
 		return Syncing
 	}
@@ -558,11 +575,15 @@ func folderState(foo SyncthingFolder) FolderState {
 		return Unshared
 	}
 
+	if !foo.hasStatus {
+		return Unknown
+	}
+
 	return Idle
 }
 
 // TODO return colors somehow
-func statusLabel(foo SyncthingFolder) string {
+func statusLabel(foo FolderWithStatusAndStats) string {
 	switch folderState(foo) {
 	case Idle:
 		return "Up to Date"
@@ -576,12 +597,14 @@ func statusLabel(foo SyncthingFolder) string {
 		return "Unshared"
 	case Error:
 		return "Error"
+	case Unknown:
+		return "Unknown"
 	}
 
 	return ""
 }
 
-func folderColor(foo SyncthingFolder) lipgloss.AdaptiveColor {
+func folderColor(foo FolderWithStatusAndStats) lipgloss.AdaptiveColor {
 	switch folderState(foo) {
 	case Idle:
 		return lipgloss.AdaptiveColor{Light: "#75e4af", Dark: "#75e4af"}
@@ -595,6 +618,8 @@ func folderColor(foo SyncthingFolder) lipgloss.AdaptiveColor {
 		return lipgloss.AdaptiveColor{Light: "", Dark: ""}
 	case Error:
 		return lipgloss.AdaptiveColor{Light: "#ff7092", Dark: "#ff7092"}
+	case Unknown:
+		return lipgloss.AdaptiveColor{Light: "", Dark: ""}
 	}
 
 	return lipgloss.AdaptiveColor{Light: "", Dark: ""}
@@ -610,9 +635,10 @@ func main() {
 }
 
 // ------------------------------- MSGS ---------------------------------
-type FetchedFoldersMsg struct {
-	folders []SyncthingFolder
-	err     error
+type FetchedFolderStatus struct {
+	folder SyncthingFolderStatus
+	id     string
+	err    error
 }
 
 type FetchedEventsMsg struct {
@@ -635,9 +661,9 @@ type FetchedSystemConnectionsMsg struct {
 	err         error
 }
 
-type FetchedDevicesMsg struct {
-	devices []SyncthingDevice
-	err     error
+type FetchedConfig struct {
+	config Config
+	err    error
 }
 
 type FetchedFolderStats struct {
@@ -652,34 +678,20 @@ type UserPostPutEndedMsg struct {
 	err    error
 }
 
-func fetchFolders(apiKey string) tea.Cmd {
+func fetchFolderStatus(apiKey string, folderID string) tea.Cmd {
 	return func() tea.Msg {
-		var folders []SyncthingFolderConfig
-		err := fetchBytes("http://localhost:8384/rest/config/folders", apiKey, &folders)
+		params := url.Values{}
+		params.Add("folder", folderID)
+		var statusFolder SyncthingFolderStatus
+		err := fetchBytes(
+			"http://localhost:8384/rest/db/status?"+params.Encode(),
+			apiKey,
+			&statusFolder)
 		if err != nil {
-			return FetchedFoldersMsg{err: err}
+			return FetchedFolderStatus{err: err}
 		}
 
-		foo := make([]SyncthingFolder, 0, len(folders))
-		for _, configFolder := range folders {
-			params := url.Values{}
-			params.Add("folder", configFolder.ID)
-			var statusFolder SyncthingFolderStatus
-			err := fetchBytes(
-				"http://localhost:8384/rest/db/status?"+params.Encode(),
-				apiKey,
-				&statusFolder)
-			if err != nil {
-				return FetchedFoldersMsg{err: err}
-			}
-
-			foo = append(foo, SyncthingFolder{
-				config: configFolder,
-				status: statusFolder,
-			})
-		}
-
-		return FetchedFoldersMsg{folders: foo}
+		return FetchedFolderStatus{folder: statusFolder, id: folderID}
 	}
 }
 
@@ -733,15 +745,15 @@ func fetchSystemConnections(apiKey string) tea.Cmd {
 	}
 }
 
-func fetchDevices(apiKey string) tea.Cmd {
+func fetchConfig(apiKey string) tea.Cmd {
 	return func() tea.Msg {
-		var devices []SyncthingDevice
-		err := fetchBytes("http://localhost:8384/rest/config/devices", apiKey, &devices)
+		var config Config
+		err := fetchBytes("http://localhost:8384/rest/config", apiKey, &config)
 		if err != nil {
-			return FetchedDevicesMsg{err: err}
+			return FetchedConfig{err: err}
 		}
 
-		return FetchedDevicesMsg{devices: devices}
+		return FetchedConfig{config: config}
 	}
 }
 
@@ -773,21 +785,12 @@ func rescanFolder(apiKey string, folderID string) tea.Cmd {
 	}
 }
 
-type SyncthingFolder struct {
-	config SyncthingFolderConfig
-	status SyncthingFolderStatus
-}
-
-func (f SyncthingFolder) FilterValue() string {
-	return f.config.Label
-}
-
-func (f SyncthingFolder) Title() string {
-	return f.config.Label
-}
-
-func (f SyncthingFolder) Description() string {
-	return statusLabel(f)
+type FolderWithStatusAndStats struct {
+	config    SyncthingFolderConfig
+	status    SyncthingFolderStatus
+	hasStatus bool
+	stats     FolderStat
+	hasStats  bool
 }
 
 func fetchBytes(url string, apiKey string, bodyType any) error {

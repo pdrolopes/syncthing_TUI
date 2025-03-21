@@ -4,46 +4,46 @@ import "time"
 
 // SYNCTHING DATA STRUCTURES
 type SyncthingFolderConfig struct {
-	ID                      string      `json:"id"`
-	Label                   string      `json:"label"`
-	FilesystemType          string      `json:"filesystemType"`
-	Path                    string      `json:"path"`
-	Type                    string      `json:"type"`
-	Devices                 []Device    `json:"devices"`
-	RescanIntervalS         int         `json:"rescanIntervalS"`
-	FsWatcherEnabled        bool        `json:"fsWatcherEnabled"`
-	FsWatcherDelayS         int         `json:"fsWatcherDelayS"`
-	FsWatcherTimeoutS       int         `json:"fsWatcherTimeoutS"`
-	IgnorePerms             bool        `json:"ignorePerms"`
-	AutoNormalize           bool        `json:"autoNormalize"`
-	MinDiskFree             MinDiskFree `json:"minDiskFree"`
-	Versioning              Versioning  `json:"versioning"`
-	Copiers                 int         `json:"copiers"`
-	PullerMaxPendingKiB     int         `json:"pullerMaxPendingKiB"`
-	Hashers                 int         `json:"hashers"`
-	Order                   string      `json:"order"`
-	IgnoreDelete            bool        `json:"ignoreDelete"`
-	ScanProgressIntervalS   int         `json:"scanProgressIntervalS"`
-	PullerPauseS            int         `json:"pullerPauseS"`
-	MaxConflicts            int         `json:"maxConflicts"`
-	DisableSparseFiles      bool        `json:"disableSparseFiles"`
-	DisableTempIndexes      bool        `json:"disableTempIndexes"`
-	Paused                  bool        `json:"paused"`
-	WeakHashThresholdPct    int         `json:"weakHashThresholdPct"`
-	MarkerName              string      `json:"markerName"`
-	CopyOwnershipFromParent bool        `json:"copyOwnershipFromParent"`
-	ModTimeWindowS          int         `json:"modTimeWindowS"`
-	MaxConcurrentWrites     int         `json:"maxConcurrentWrites"`
-	DisableFsync            bool        `json:"disableFsync"`
-	BlockPullOrder          string      `json:"blockPullOrder"`
-	CopyRangeMethod         string      `json:"copyRangeMethod"`
-	CaseSensitiveFS         bool        `json:"caseSensitiveFS"`
-	JunctionsAsDirs         bool        `json:"junctionsAsDirs"`
-	SyncOwnership           bool        `json:"syncOwnership"`
-	SendOwnership           bool        `json:"sendOwnership"`
-	SyncXattrs              bool        `json:"syncXattrs"`
-	SendXattrs              bool        `json:"sendXattrs"`
-	XattrFilter             XattrFilter `json:"xattrFilter"`
+	ID                      string         `json:"id"`
+	Label                   string         `json:"label"`
+	FilesystemType          string         `json:"filesystemType"`
+	Path                    string         `json:"path"`
+	Type                    string         `json:"type"`
+	Devices                 []FolderDevice `json:"devices"`
+	RescanIntervalS         int            `json:"rescanIntervalS"`
+	FsWatcherEnabled        bool           `json:"fsWatcherEnabled"`
+	FsWatcherDelayS         int            `json:"fsWatcherDelayS"`
+	FsWatcherTimeoutS       int            `json:"fsWatcherTimeoutS"`
+	IgnorePerms             bool           `json:"ignorePerms"`
+	AutoNormalize           bool           `json:"autoNormalize"`
+	MinDiskFree             MinDiskFree    `json:"minDiskFree"`
+	Versioning              Versioning     `json:"versioning"`
+	Copiers                 int            `json:"copiers"`
+	PullerMaxPendingKiB     int            `json:"pullerMaxPendingKiB"`
+	Hashers                 int            `json:"hashers"`
+	Order                   string         `json:"order"`
+	IgnoreDelete            bool           `json:"ignoreDelete"`
+	ScanProgressIntervalS   int            `json:"scanProgressIntervalS"`
+	PullerPauseS            int            `json:"pullerPauseS"`
+	MaxConflicts            int            `json:"maxConflicts"`
+	DisableSparseFiles      bool           `json:"disableSparseFiles"`
+	DisableTempIndexes      bool           `json:"disableTempIndexes"`
+	Paused                  bool           `json:"paused"`
+	WeakHashThresholdPct    int            `json:"weakHashThresholdPct"`
+	MarkerName              string         `json:"markerName"`
+	CopyOwnershipFromParent bool           `json:"copyOwnershipFromParent"`
+	ModTimeWindowS          int            `json:"modTimeWindowS"`
+	MaxConcurrentWrites     int            `json:"maxConcurrentWrites"`
+	DisableFsync            bool           `json:"disableFsync"`
+	BlockPullOrder          string         `json:"blockPullOrder"`
+	CopyRangeMethod         string         `json:"copyRangeMethod"`
+	CaseSensitiveFS         bool           `json:"caseSensitiveFS"`
+	JunctionsAsDirs         bool           `json:"junctionsAsDirs"`
+	SyncOwnership           bool           `json:"syncOwnership"`
+	SendOwnership           bool           `json:"sendOwnership"`
+	SyncXattrs              bool           `json:"syncXattrs"`
+	SendXattrs              bool           `json:"sendXattrs"`
+	XattrFilter             XattrFilter    `json:"xattrFilter"`
 }
 
 type SyncthingFolderStatus struct {
@@ -86,7 +86,7 @@ type SyncthingFolderStatus struct {
 	WatchError                    string         `json:"watchError"`
 }
 
-type Device struct {
+type FolderDevice struct {
 	DeviceID           string `json:"deviceID"`
 	IntroducedBy       string `json:"introducedBy"`
 	EncryptionPassword string `json:"encryptionPassword"`
@@ -239,4 +239,178 @@ type LastFile struct {
 type FolderStat struct {
 	LastFile LastFile  `json:"lastFile"`
 	LastScan time.Time `json:"lastScan"`
+}
+
+type Config struct {
+	Version  int                     `json:"version"`
+	Folders  []SyncthingFolderConfig `json:"folders"`
+	Devices  []SyncthingDevice       `json:"devices"`
+	GUI      GUI                     `json:"gui"`
+	LDAP     LDAP                    `json:"ldap"`
+	Options  Options                 `json:"options"`
+	Defaults Defaults                `json:"defaults"`
+}
+
+type GUI struct {
+	Enabled                   bool   `json:"enabled"`
+	Address                   string `json:"address"`
+	UnixSocketPermissions     string `json:"unixSocketPermissions"`
+	User                      string `json:"user"`
+	Password                  string `json:"password"`
+	AuthMode                  string `json:"authMode"`
+	UseTLS                    bool   `json:"useTLS"`
+	APIKey                    string `json:"apiKey"`
+	InsecureAdminAccess       bool   `json:"insecureAdminAccess"`
+	Theme                     string `json:"theme"`
+	Debugging                 bool   `json:"debugging"`
+	InsecureSkipHostcheck     bool   `json:"insecureSkipHostcheck"`
+	InsecureAllowFrameLoading bool   `json:"insecureAllowFrameLoading"`
+	SendBasicAuthPrompt       bool   `json:"sendBasicAuthPrompt"`
+}
+
+type LDAP struct {
+	Address            string `json:"address"`
+	BindDN             string `json:"bindDN"`
+	Transport          string `json:"transport"`
+	InsecureSkipVerify bool   `json:"insecureSkipVerify"`
+	SearchBaseDN       string `json:"searchBaseDN"`
+	SearchFilter       string `json:"searchFilter"`
+}
+
+type Options struct {
+	ListenAddresses                     []string  `json:"listenAddresses"`
+	GlobalAnnounceServers               []string  `json:"globalAnnounceServers"`
+	GlobalAnnounceEnabled               bool      `json:"globalAnnounceEnabled"`
+	LocalAnnounceEnabled                bool      `json:"localAnnounceEnabled"`
+	LocalAnnouncePort                   int       `json:"localAnnouncePort"`
+	LocalAnnounceMCAddr                 string    `json:"localAnnounceMCAddr"`
+	MaxSendKbps                         int       `json:"maxSendKbps"`
+	MaxRecvKbps                         int       `json:"maxRecvKbps"`
+	ReconnectionIntervalS               int       `json:"reconnectionIntervalS"`
+	RelaysEnabled                       bool      `json:"relaysEnabled"`
+	RelayReconnectIntervalM             int       `json:"relayReconnectIntervalM"`
+	StartBrowser                        bool      `json:"startBrowser"`
+	NatEnabled                          bool      `json:"natEnabled"`
+	NatLeaseMinutes                     int       `json:"natLeaseMinutes"`
+	NatRenewalMinutes                   int       `json:"natRenewalMinutes"`
+	NatTimeoutSeconds                   int       `json:"natTimeoutSeconds"`
+	UrAccepted                          int       `json:"urAccepted"`
+	UrSeen                              int       `json:"urSeen"`
+	UrUniqueId                          string    `json:"urUniqueId"`
+	UrURL                               string    `json:"urURL"`
+	UrPostInsecurely                    bool      `json:"urPostInsecurely"`
+	UrInitialDelayS                     int       `json:"urInitialDelayS"`
+	AutoUpgradeIntervalH                int       `json:"autoUpgradeIntervalH"`
+	UpgradeToPreReleases                bool      `json:"upgradeToPreReleases"`
+	KeepTemporariesH                    int       `json:"keepTemporariesH"`
+	CacheIgnoredFiles                   bool      `json:"cacheIgnoredFiles"`
+	ProgressUpdateIntervalS             int       `json:"progressUpdateIntervalS"`
+	LimitBandwidthInLan                 bool      `json:"limitBandwidthInLan"`
+	MinHomeDiskFree                     DiskSpace `json:"minHomeDiskFree"`
+	ReleasesURL                         string    `json:"releasesURL"`
+	AlwaysLocalNets                     []string  `json:"alwaysLocalNets"`
+	OverwriteRemoteDeviceNamesOnConnect bool      `json:"overwriteRemoteDeviceNamesOnConnect"`
+	TempIndexMinBlocks                  int       `json:"tempIndexMinBlocks"`
+	UnackedNotificationIDs              []string  `json:"unackedNotificationIDs"`
+	TrafficClass                        int       `json:"trafficClass"`
+	SetLowPriority                      bool      `json:"setLowPriority"`
+	MaxFolderConcurrency                int       `json:"maxFolderConcurrency"`
+	CrURL                               string    `json:"crURL"`
+	CrashReportingEnabled               bool      `json:"crashReportingEnabled"`
+	StunKeepaliveStartS                 int       `json:"stunKeepaliveStartS"`
+	StunKeepaliveMinS                   int       `json:"stunKeepaliveMinS"`
+	StunServers                         []string  `json:"stunServers"`
+	DatabaseTuning                      string    `json:"databaseTuning"`
+	MaxConcurrentIncomingRequestKiB     int       `json:"maxConcurrentIncomingRequestKiB"`
+	AnnounceLANAddresses                bool      `json:"announceLANAddresses"`
+	SendFullIndexOnUpgrade              bool      `json:"sendFullIndexOnUpgrade"`
+	FeatureFlags                        []string  `json:"featureFlags"`
+	ConnectionLimitEnough               int       `json:"connectionLimitEnough"`
+	ConnectionLimitMax                  int       `json:"connectionLimitMax"`
+	InsecureAllowOldTLSVersions         bool      `json:"insecureAllowOldTLSVersions"`
+	ConnectionPriorityTcpLan            int       `json:"connectionPriorityTcpLan"`
+	ConnectionPriorityQuicLan           int       `json:"connectionPriorityQuicLan"`
+	ConnectionPriorityTcpWan            int       `json:"connectionPriorityTcpWan"`
+	ConnectionPriorityQuicWan           int       `json:"connectionPriorityQuicWan"`
+	ConnectionPriorityRelay             int       `json:"connectionPriorityRelay"`
+	ConnectionPriorityUpgradeThreshold  int       `json:"connectionPriorityUpgradeThreshold"`
+}
+
+type Defaults struct {
+	Folder  FolderDefaults  `json:"folder"`
+	Device  DeviceDefaults  `json:"device"`
+	Ignores IgnoresDefaults `json:"ignores"`
+}
+
+type FolderDefaults struct {
+	ID                      string         `json:"id"`
+	Label                   string         `json:"label"`
+	FilesystemType          string         `json:"filesystemType"`
+	Path                    string         `json:"path"`
+	Type                    string         `json:"type"`
+	Devices                 []FolderDevice `json:"devices"`
+	RescanIntervalS         int            `json:"rescanIntervalS"`
+	FsWatcherEnabled        bool           `json:"fsWatcherEnabled"`
+	FsWatcherDelayS         int            `json:"fsWatcherDelayS"`
+	FsWatcherTimeoutS       int            `json:"fsWatcherTimeoutS"`
+	IgnorePerms             bool           `json:"ignorePerms"`
+	AutoNormalize           bool           `json:"autoNormalize"`
+	MinDiskFree             DiskSpace      `json:"minDiskFree"`
+	Versioning              Versioning     `json:"versioning"`
+	Copiers                 int            `json:"copiers"`
+	PullerMaxPendingKiB     int            `json:"pullerMaxPendingKiB"`
+	Hashers                 int            `json:"hashers"`
+	Order                   string         `json:"order"`
+	IgnoreDelete            bool           `json:"ignoreDelete"`
+	ScanProgressIntervalS   int            `json:"scanProgressIntervalS"`
+	PullerPauseS            int            `json:"pullerPauseS"`
+	MaxConflicts            int            `json:"maxConflicts"`
+	DisableSparseFiles      bool           `json:"disableSparseFiles"`
+	DisableTempIndexes      bool           `json:"disableTempIndexes"`
+	Paused                  bool           `json:"paused"`
+	WeakHashThresholdPct    int            `json:"weakHashThresholdPct"`
+	MarkerName              string         `json:"markerName"`
+	CopyOwnershipFromParent bool           `json:"copyOwnershipFromParent"`
+	ModTimeWindowS          int            `json:"modTimeWindowS"`
+	MaxConcurrentWrites     int            `json:"maxConcurrentWrites"`
+	DisableFsync            bool           `json:"disableFsync"`
+	BlockPullOrder          string         `json:"blockPullOrder"`
+	CopyRangeMethod         string         `json:"copyRangeMethod"`
+	CaseSensitiveFS         bool           `json:"caseSensitiveFS"`
+	JunctionsAsDirs         bool           `json:"junctionsAsDirs"`
+	SyncOwnership           bool           `json:"syncOwnership"`
+	SendOwnership           bool           `json:"sendOwnership"`
+	SyncXattrs              bool           `json:"syncXattrs"`
+	SendXattrs              bool           `json:"sendXattrs"`
+	XattrFilter             XattrFilter    `json:"xattrFilter"`
+}
+
+type DeviceDefaults struct {
+	DeviceID                 string   `json:"deviceID"`
+	Name                     string   `json:"name"`
+	Addresses                []string `json:"addresses"`
+	Compression              string   `json:"compression"`
+	CertName                 string   `json:"certName"`
+	Introducer               bool     `json:"introducer"`
+	SkipIntroductionRemovals bool     `json:"skipIntroductionRemovals"`
+	IntroducedBy             string   `json:"introducedBy"`
+	Paused                   bool     `json:"paused"`
+	AllowedNetworks          []string `json:"allowedNetworks"`
+	AutoAcceptFolders        bool     `json:"autoAcceptFolders"`
+	MaxSendKbps              int      `json:"maxSendKbps"`
+	MaxRecvKbps              int      `json:"maxRecvKbps"`
+	IgnoredFolders           []string `json:"ignoredFolders"`
+	MaxRequestKiB            int      `json:"maxRequestKiB"`
+	Untrusted                bool     `json:"untrusted"`
+	RemoteGUIPort            int      `json:"remoteGUIPort"`
+	NumConnections           int      `json:"numConnections"`
+}
+
+type IgnoresDefaults struct {
+	Lines []string `json:"lines"`
+}
+
+type DiskSpace struct {
+	Value float64 `json:"value"`
+	Unit  string  `json:"unit"`
 }
