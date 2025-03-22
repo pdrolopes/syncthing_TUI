@@ -186,7 +186,7 @@ type SyncthingSystemConnections struct {
 	Total       Total       `json:"total"`
 }
 
-type SyncthingDevice struct {
+type DeviceConfig struct {
 	DeviceID                 string          `json:"deviceID"`
 	Name                     string          `json:"name"`
 	Addresses                []string        `json:"addresses"`
@@ -236,7 +236,7 @@ type LastFile struct {
 	Deleted  bool      `json:"deleted"`
 }
 
-type FolderStat struct {
+type FolderStats struct {
 	LastFile LastFile  `json:"lastFile"`
 	LastScan time.Time `json:"lastScan"`
 }
@@ -244,7 +244,7 @@ type FolderStat struct {
 type Config struct {
 	Version  int                     `json:"version"`
 	Folders  []SyncthingFolderConfig `json:"folders"`
-	Devices  []SyncthingDevice       `json:"devices"`
+	Devices  []DeviceConfig          `json:"devices"`
 	GUI      GUI                     `json:"gui"`
 	LDAP     LDAP                    `json:"ldap"`
 	Options  Options                 `json:"options"`
@@ -413,4 +413,20 @@ type IgnoresDefaults struct {
 type DiskSpace struct {
 	Value float64 `json:"value"`
 	Unit  string  `json:"unit"`
+}
+
+type DeviceStats struct {
+	LastSeen                time.Time `json:"lastSeen"`
+	LastConnectionDurationS float64   `json:"lastConnectionDurationS"`
+}
+
+type SyncStatusCompletion struct {
+	Completion  float64 `json:"completion"`
+	GlobalBytes int64   `json:"globalBytes"`
+	NeedBytes   int64   `json:"needBytes"`
+	GlobalItems int     `json:"globalItems"`
+	NeedItems   int     `json:"needItems"`
+	NeedDeletes int     `json:"needDeletes"`
+	RemoteState string  `json:"remoteState"`
+	Sequence    int     `json:"sequence"`
 }
