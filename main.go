@@ -38,7 +38,7 @@ type model struct {
 	width             int
 	height            int
 	thisDevice        thisDeviceModel
-	expandedFolder    string
+	expandedFolder    map[string]struct{}
 	ongoingUserAction bool
 
 	// Syncthing DATA
@@ -65,6 +65,8 @@ const (
 	RESUME_ALL_MARK         = "resume-all"
 )
 
+var VERSION = "unknown"
+
 var quitKeys = key.NewBinding(
 	key.WithKeys("q", "esc", "ctrl+c"),
 	key.WithHelp("", "press q to quit"),
@@ -86,6 +88,7 @@ func initModel() model {
 		syncthingApiKey: syncthingApiKey,
 		dump:            dump,
 		folderStatuses:  make(map[string]SyncthingFolderStatus),
+		expandedFolder:  make(map[string]struct{}),
 	}
 }
 
@@ -94,7 +97,6 @@ func (m model) Init() tea.Cmd {
 		fetchConfig(m.syncthingApiKey),
 		fetchEvents(m.syncthingApiKey, 0),
 		fetchFolderStats(m.syncthingApiKey),
-		// fetchFolders(m.syncthingApiKey),
 		fetchSystemConnections(m.syncthingApiKey),
 		fetchSystemStatus(m.syncthingApiKey),
 		fetchSystemVersion(m.syncthingApiKey),
@@ -143,12 +145,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		for _, folder := range m.config.Folders {
 			if zone.Get(folder.ID).InBounds(msg) {
-				if m.expandedFolder == folder.ID {
-					m.expandedFolder = ""
+				if _, exists := m.expandedFolder[folder.ID]; exists {
+					delete(m.expandedFolder, folder.ID)
 				} else {
-					m.expandedFolder = folder.ID
+					m.expandedFolder[folder.ID] = struct{}{}
 				}
-				break
+				return m, nil
 			}
 
 			if zone.Get(folder.ID+"/pause").InBounds(msg) && !m.ongoingUserAction {
@@ -277,16 +279,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 }
 
-func thisDeviceName(myID string, devices []SyncthingDevice) string {
-	for _, device := range devices {
-		if device.DeviceID == myID {
-			return device.Name
-		}
-	}
-
-	return "no-name"
-}
-
 // ------------------ VIEW --------------------------
 
 func (m model) View() string {
@@ -316,14 +308,16 @@ func (m model) View() string {
 	})
 	return zone.Scan(lipgloss.NewStyle().MaxHeight(m.height).Render(
 		lipgloss.JoinHorizontal(lipgloss.Top,
-			ViewFolders(folders, m.config.Devices, m.status.MyID, m.expandedFolder),
-			viewStatus(
-				m.status,
-				m.connections,
-				lo.Values(m.folderStatuses),
-				m.version,
-				m.thisDevice),
-		)))
+			viewFolders(folders, m.config.Devices, m.status.MyID, m.expandedFolder),
+			lipgloss.JoinVertical(lipgloss.Left,
+				viewStatus(
+					m.status,
+					m.connections,
+					lo.Values(m.folderStatuses),
+					m.version,
+					m.thisDevice),
+				viewDevices(m.config.Devices),
+			))))
 }
 
 func viewStatus(
@@ -377,7 +371,8 @@ func viewStatus(
 				humanize.IBytes(uint64(totalBytes))),
 		).
 		Row("Uptime", HumanizeDuration(int(status.Uptime))).
-		Row("Version", fmt.Sprintf("%s, %s (%s)", version.Version, osName(version.OS), archName(version.Arch)))
+		Row("Syncthing Version", fmt.Sprintf("%s, %s (%s)", version.Version, osName(version.OS), archName(version.Arch))).
+		Row("Version", VERSION)
 
 	return foo.Render(
 		lipgloss.JoinVertical(
@@ -394,14 +389,15 @@ var btnStyle = lipgloss.
 	PaddingLeft(1).
 	PaddingRight(1)
 
-func ViewFolders(
+func viewFolders(
 	folders []FolderWithStatusAndStats,
 	devices []SyncthingDevice,
 	myID string,
-	expandedFolder string,
+	expandedFolder map[string]struct{},
 ) string {
 	views := lo.Map(folders, func(item FolderWithStatusAndStats, index int) string {
-		return ViewFolder(item, devices, myID, item.config.ID == expandedFolder)
+		_, isExpanded := expandedFolder[item.config.ID]
+		return viewFolder(item, devices, myID, isExpanded)
 	})
 
 	btns := make([]string, 0)
@@ -420,7 +416,7 @@ func ViewFolders(
 	return lipgloss.JoinVertical(lipgloss.Right, views...)
 }
 
-func ViewFolder(folder FolderWithStatusAndStats, devices []SyncthingDevice, myID string, expanded bool) string {
+func viewFolder(folder FolderWithStatusAndStats, devices []SyncthingDevice, myID string, expanded bool) string {
 	folderStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder(), true).
 		BorderForeground(folderColor(folder)).
@@ -445,29 +441,10 @@ func ViewFolder(folder FolderWithStatusAndStats, devices []SyncthingDevice, myID
 			lipgloss.NewStyle().Foreground(folderColor(folder)).Render(statusLabel(folder)),
 		)
 
-	content := ""
-	footer := ""
+	verticalViews := make([]string, 0)
+	verticalViews = append(verticalViews, zone.Mark(folder.config.ID, t.Render()))
 	if expanded {
 		foo := lo.Ternary(folder.config.FsWatcherEnabled, "Enabled", "Disabled")
-
-		footerStyle := lipgloss.
-			NewStyle().
-			Width(folderStyle.GetWidth()).
-			Align(lipgloss.Right)
-
-		pauseBtn := zone.
-			Mark(folder.config.ID+"/pause",
-				btnStyle.
-					Render(lo.Ternary(
-						folderState(folder) == Paused,
-						"Resume",
-						"Pause",
-					)))
-		rescanBtn := zone.
-			Mark(folder.config.ID+"/rescan",
-				btnStyle.Render("Rescan"))
-
-		footer = footerStyle.Render(lipgloss.JoinHorizontal(lipgloss.Top, pauseBtn, rescanBtn))
 
 		sharedDevices := lo.FilterMap(folder.config.Devices, func(sharedDevice FolderDevice, index int) (string, bool) {
 			if sharedDevice.DeviceID == myID {
@@ -481,7 +458,7 @@ func ViewFolder(folder FolderWithStatusAndStats, devices []SyncthingDevice, myID
 			return d.Name, found
 		})
 
-		content = table.
+		verticalViews = append(verticalViews, table.
 			New().
 			Border(lipgloss.HiddenBorder()).
 			Width(folderStyle.GetWidth()).
@@ -512,15 +489,43 @@ func ViewFolder(folder FolderWithStatusAndStats, devices []SyncthingDevice, myID
 			Row("Shared With", strings.Join(sharedDevices, ", ")).
 			Row("Last Scan", fmt.Sprint(folder.stats.LastScan)).
 			Row("Last File", fmt.Sprint(folder.stats.LastFile.Filename)).
-			Render()
+			Render())
+
+		footerStyle := lipgloss.
+			NewStyle().
+			Width(folderStyle.GetWidth()).
+			Align(lipgloss.Right)
+
+		pauseBtn := zone.
+			Mark(folder.config.ID+"/pause",
+				btnStyle.
+					Render(lo.Ternary(
+						folderState(folder) == Paused,
+						"Resume",
+						"Pause",
+					)))
+		rescanBtn := zone.
+			Mark(folder.config.ID+"/rescan",
+				btnStyle.Render("Rescan"))
+
+		verticalViews = append(verticalViews, footerStyle.Render(lipgloss.JoinHorizontal(lipgloss.Top, pauseBtn, rescanBtn)))
 
 	}
 
-	return folderStyle.Render(lipgloss.JoinVertical(lipgloss.Left,
-		zone.Mark(folder.config.ID, t.Render()),
-		content,
-		footer,
-	))
+	return folderStyle.Render(lipgloss.JoinVertical(lipgloss.Left, verticalViews...))
+}
+
+func viewDevices(devices []SyncthingDevice) string {
+
+	views := lo.Map(devices, func(device SyncthingDevice, index int) string {
+		return viewDevice(device)
+	})
+
+	return lipgloss.JoinVertical(lipgloss.Left, views...)
+}
+
+func viewDevice(device SyncthingDevice) string {
+	return ""
 }
 
 func osName(os string) string {
@@ -659,6 +664,16 @@ func folderColor(foo FolderWithStatusAndStats) lipgloss.AdaptiveColor {
 	}
 
 	return lipgloss.AdaptiveColor{Light: "", Dark: ""}
+}
+
+func thisDeviceName(myID string, devices []SyncthingDevice) string {
+	for _, device := range devices {
+		if device.DeviceID == myID {
+			return device.Name
+		}
+	}
+
+	return "no-name"
 }
 
 func main() {
