@@ -342,15 +342,7 @@ func viewStatus(
 		inBytesPerSecond = thisDevice.deltaBytesIn / thisDevice.deltaTime
 		outBytesPerSecond = thisDevice.deltaBytesOut / thisDevice.deltaTime
 	}
-	t := table.New().
-		Border(lipgloss.HiddenBorder()).
-		Width(foo.GetWidth()-foo.GetHorizontalPadding()).
-		StyleFunc(func(row, col int) lipgloss.Style {
-			if col == 1 {
-				return lipgloss.NewStyle().Align(lipgloss.Right)
-			}
-			return lipgloss.NewStyle()
-		}).
+	t := spaceAroundTable().
 		Row(
 			"Download rate",
 			fmt.Sprintf("%s/s (%s)",
@@ -374,10 +366,11 @@ func viewStatus(
 		Row("Syncthing Version", fmt.Sprintf("%s, %s (%s)", version.Version, osName(version.OS), archName(version.Arch))).
 		Row("Version", VERSION)
 
+	header := lipgloss.NewStyle().PaddingBottom(1).Bold(true).Render(thisDevice.name)
 	return foo.Render(
 		lipgloss.JoinVertical(
 			lipgloss.Left,
-			thisDevice.name,
+			header,
 			t.Render(),
 		),
 	)
@@ -416,33 +409,39 @@ func viewFolders(
 	return lipgloss.JoinVertical(lipgloss.Right, views...)
 }
 
-func viewFolder(folder FolderWithStatusAndStats, devices []SyncthingDevice, myID string, expanded bool) string {
-	folderStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder(), true).
-		BorderForeground(folderColor(folder)).
-		Width(60)
-
-	// TODO this borderless table to so reusable table
-	t := table.New().
+func spaceAroundTable() *table.Table {
+	return table.New().
 		BorderTop(false).
 		BorderBottom(false).
 		BorderLeft(false).
 		BorderRight(false).
 		BorderColumn(false).
-		Width(folderStyle.GetWidth()).
 		StyleFunc(func(row, col int) lipgloss.Style {
 			if col == 1 {
 				return lipgloss.NewStyle().Align(lipgloss.Right)
 			}
 			return lipgloss.NewStyle()
-		}).
+		})
+}
+
+func viewFolder(folder FolderWithStatusAndStats, devices []SyncthingDevice, myID string, expanded bool) string {
+	folderStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder(), true).
+		PaddingLeft(1).
+		PaddingRight(1).
+		BorderForeground(folderColor(folder)).
+		Width(60)
+	folderStyleInnerWidth := folderStyle.GetWidth() - folderStyle.GetHorizontalPadding()
+	boldStyle := lipgloss.NewStyle().Bold(true)
+	header := spaceAroundTable().
+		Width(folderStyleInnerWidth).
 		Row(
-			folder.config.Label,
-			lipgloss.NewStyle().Foreground(folderColor(folder)).Render(statusLabel(folder)),
+			boldStyle.Render(folder.config.Label),
+			lipgloss.NewStyle().Foreground(folderColor(folder)).Bold(true).Render(statusLabel(folder)),
 		)
 
 	verticalViews := make([]string, 0)
-	verticalViews = append(verticalViews, zone.Mark(folder.config.ID, t.Render()))
+	verticalViews = append(verticalViews, zone.Mark(folder.config.ID, header.Render()))
 	if expanded {
 		foo := lo.Ternary(folder.config.FsWatcherEnabled, "Enabled", "Disabled")
 
@@ -458,42 +457,36 @@ func viewFolder(folder FolderWithStatusAndStats, devices []SyncthingDevice, myID
 			return d.Name, found
 		})
 
-		verticalViews = append(verticalViews, table.
-			New().
-			Border(lipgloss.HiddenBorder()).
-			Width(folderStyle.GetWidth()).
-			StyleFunc(func(row, col int) lipgloss.Style {
-				if col == 1 {
-					return lipgloss.NewStyle().Align(lipgloss.Right)
-				}
-				return lipgloss.NewStyle()
-			}).
-			Row("Folder ID", folder.config.ID).
-			Row("Folder Path", folder.config.Path).
-			Row("Folder Type", folder.config.Type). // TODO create custom label
-			Row("Global State",
-				fmt.Sprintf("📄 %d 📁 %d 📁 %s",
-					folder.status.GlobalFiles,
-					folder.status.GlobalDirectories,
-					humanize.IBytes(uint64(folder.status.GlobalBytes))),
-			).
-			Row("Local State",
-				fmt.Sprintf("📄 %d 📁 %d 📁 %s",
-					folder.status.LocalFiles,
-					folder.status.LocalDirectories,
-					humanize.IBytes(uint64(folder.status.LocalBytes))),
-			).
-			Row("Rescans ", fmt.Sprintf("%s  %s", HumanizeDuration(folder.config.RescanIntervalS), foo)).
-			Row("File Pull Order", fmt.Sprint(folder.config.Order)).
-			Row("File Versioning", fmt.Sprint(folder.config.Versioning.Type)).
-			Row("Shared With", strings.Join(sharedDevices, ", ")).
-			Row("Last Scan", fmt.Sprint(folder.stats.LastScan)).
-			Row("Last File", fmt.Sprint(folder.stats.LastFile.Filename)).
-			Render())
+		verticalViews = append(
+			verticalViews,
+			spaceAroundTable().
+				Width(folderStyleInnerWidth).
+				Row("Folder ID", folder.config.ID).
+				Row("Folder Path", folder.config.Path).
+				Row("Folder Type", folder.config.Type). // TODO create custom label
+				Row("Global State",
+					fmt.Sprintf("📄 %d 📁 %d 📁 %s",
+						folder.status.GlobalFiles,
+						folder.status.GlobalDirectories,
+						humanize.IBytes(uint64(folder.status.GlobalBytes))),
+				).
+				Row("Local State",
+					fmt.Sprintf("📄 %d 📁 %d 📁 %s",
+						folder.status.LocalFiles,
+						folder.status.LocalDirectories,
+						humanize.IBytes(uint64(folder.status.LocalBytes))),
+				).
+				Row("Rescans ", fmt.Sprintf("%s  %s", HumanizeDuration(folder.config.RescanIntervalS), foo)).
+				Row("File Pull Order", fmt.Sprint(folder.config.Order)).
+				Row("File Versioning", fmt.Sprint(folder.config.Versioning.Type)).
+				Row("Shared With", strings.Join(sharedDevices, ", ")).
+				Row("Last Scan", fmt.Sprint(folder.stats.LastScan)).
+				Row("Last File", fmt.Sprint(folder.stats.LastFile.Filename)).
+				Render())
 
 		footerStyle := lipgloss.
 			NewStyle().
-			Width(folderStyle.GetWidth()).
+			Width(folderStyleInnerWidth).
 			Align(lipgloss.Right)
 
 		pauseBtn := zone.
@@ -516,7 +509,6 @@ func viewFolder(folder FolderWithStatusAndStats, devices []SyncthingDevice, myID
 }
 
 func viewDevices(devices []SyncthingDevice) string {
-
 	views := lo.Map(devices, func(device SyncthingDevice, index int) string {
 		return viewDevice(device)
 	})
