@@ -32,6 +32,7 @@ type errMsg error
 // TODO currently we are skipping tls verification for the https://localhost path. What can we do about it
 // TODO decide folder/device widths and the responsiveness based on terminal width
 // TODO create scrollable interface
+// TODO handle ConfigSaved event and parse the config that ithas
 
 type model struct {
 	dump              io.Writer
@@ -558,6 +559,7 @@ func (m model) View() string {
 			expanded:      expanded,
 		}
 	})
+
 	return zone.Scan(lipgloss.NewStyle().MaxHeight(m.height).Render(
 		lipgloss.JoinHorizontal(lipgloss.Top,
 			viewFolders(folders, m.config.Devices, m.status.MyID, m.expandedFields),
@@ -568,7 +570,10 @@ func (m model) View() string {
 					m.prevConnections,
 					lo.Values(m.folderStatuses),
 					m.version,
-					thisDeviceName(m.status.MyID, m.config.Devices)),
+					thisDeviceName(m.status.MyID, m.config.Devices),
+					m.config.Options,
+				),
+
 				viewDevices(devices, m.currentTime),
 			))))
 }
@@ -580,6 +585,7 @@ func viewStatus(
 	folders []SyncthingFolderStatus,
 	version SyncthingSystemVersion,
 	thisDeviceName string,
+	options Options,
 ) string {
 	foo := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -610,6 +616,8 @@ func viewStatus(
 			at:    connections.Total.At,
 		},
 	)
+	italicStyle := lipgloss.NewStyle().Italic(true).Render
+
 	t := spaceAroundTable().
 		Row(
 			"Download rate",
@@ -617,19 +625,34 @@ func viewStatus(
 				humanize.IBytes(uint64(inBytesPerSecond)),
 				humanize.IBytes(uint64(connections.Total.InBytesTotal)),
 			),
-		).
-		Row("Upload rate",
-			fmt.Sprintf("%s/s (%s)",
-				humanize.IBytes(uint64(outBytesPerSecond)),
-				humanize.IBytes(uint64(connections.Total.OutBytesTotal)),
-			),
-		).
-		Row("Local State (Total)",
-			fmt.Sprintf("📄 %d 📁 %d 📁 %s",
-				totalFiles,
-				totalDirectories,
-				humanize.IBytes(uint64(totalBytes))),
-		).
+		)
+
+	if options.MaxSendKbps > 0 {
+		t = t.Row("",
+			italicStyle(fmt.Sprintf("Limit: %s/s",
+				humanize.IBytes(uint64(options.MaxSendKbps)*humanize.KiByte))))
+	}
+
+	t = t.Row("Upload rate",
+		fmt.Sprintf("%s/s (%s)",
+			humanize.IBytes(uint64(outBytesPerSecond)),
+			humanize.IBytes(uint64(connections.Total.OutBytesTotal)),
+		),
+	)
+
+	if options.MaxRecvKbps > 0 {
+		t = t.Row("",
+			italicStyle(
+				fmt.Sprintf("Limit: %s/s",
+					humanize.IBytes(uint64(options.MaxRecvKbps)*humanize.KiByte))))
+	}
+
+	t = t.Row("Local State (Total)",
+		fmt.Sprintf("📄 %d 📁 %d 📁 %s",
+			totalFiles,
+			totalDirectories,
+			humanize.IBytes(uint64(totalBytes))),
+	).
 		Row("Uptime", HumanizeDuration(int(status.Uptime))).
 		Row("Syncthing Version", fmt.Sprintf("%s, %s (%s)", version.Version, osName(version.OS), archName(version.Arch))).
 		Row("Version", VERSION)
