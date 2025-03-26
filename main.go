@@ -754,13 +754,25 @@ func viewFolder(folder GroupedFolderData, devices []DeviceConfig, myID string, e
 			return d.Name, found
 		})
 
+		var folderType string
+		switch folder.config.Type {
+		case "receiveonly":
+			folderType = "Receive Only"
+		case "sendreceive":
+			folderType = "Send and Receive"
+		case "sendonly":
+			folderType = "Send Only"
+		default:
+			folderType = "unknown"
+		}
+
 		verticalViews = append(
 			verticalViews,
 			spaceAroundTable().
 				Width(folderStyleInnerWidth).
 				Row("Folder ID", folder.config.ID).
 				Row("Folder Path", folder.config.Path).
-				Row("Folder Type", folder.config.Type). // TODO create custom label
+				Row("Folder Type", folderType).
 				Row("Global State",
 					fmt.Sprintf("📄 %d 📁 %d 📁 %s",
 						folder.status.GlobalFiles,
@@ -975,6 +987,10 @@ const (
 	Paused
 	Unshared
 	Scanning
+	OutOfSync
+	FailedItems
+	LocalAdditions
+	LocalUnencrypted
 	Unknown
 )
 
@@ -998,11 +1014,21 @@ func folderState(foo GroupedFolderData) FolderState {
 		return Unshared
 	}
 
-	if !foo.hasStatus {
-		return Unknown
+	if foo.status.NeedTotalItems > 0 {
+		return OutOfSync
 	}
 
-	return Idle
+	if (foo.config.Type == "receiveonly" ||
+		foo.config.Type == "receiveencrypted") &&
+		foo.status.ReceiveOnlyTotalItems > 0 {
+		return lo.Ternary(foo.config.Type == "receiveonly", LocalAdditions, LocalUnencrypted)
+	}
+
+	if foo.status.State == "idle" {
+		return Idle
+	}
+
+	return Unknown
 }
 
 type DeviceStatus int
@@ -1124,6 +1150,14 @@ func folderStatusLabel(foo GroupedFolderData) string {
 		return "Unshared"
 	case Error:
 		return "Error"
+	case OutOfSync:
+		return "Out of Sync"
+	case FailedItems:
+		return "Failed Items"
+	case LocalAdditions:
+		return "Local Additions"
+	case LocalUnencrypted:
+		return "Local Unencrypted"
 	case Unknown:
 		return "Unknown"
 	}
@@ -1145,6 +1179,14 @@ func folderColor(foo GroupedFolderData) lipgloss.AdaptiveColor {
 		return lipgloss.AdaptiveColor{Light: "", Dark: ""}
 	case Error:
 		return lipgloss.AdaptiveColor{Light: "#ff7092", Dark: "#ff7092"}
+	case OutOfSync:
+		return lipgloss.AdaptiveColor{Light: "#ff7092", Dark: "#ff7092"}
+	case FailedItems:
+		return lipgloss.AdaptiveColor{Light: "#ff7092", Dark: "#ff7092"}
+	case LocalAdditions:
+		return successColor
+	case LocalUnencrypted:
+		return successColor
 	case Unknown:
 		return lipgloss.AdaptiveColor{Light: "", Dark: ""}
 	}
