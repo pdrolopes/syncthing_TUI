@@ -1,6 +1,9 @@
 package main
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // SYNCTHING DATA STRUCTURES
 type SyncthingFolderConfig struct {
@@ -113,13 +116,6 @@ type XattrFilter struct {
 	Entries            []string `json:"entries"`
 	MaxSingleEntrySize int      `json:"maxSingleEntrySize"`
 	MaxTotalSize       int      `json:"maxTotalSize"`
-}
-
-type SyncthingEvent struct {
-	ID       int       `json:"id"`
-	GlobalID int       `json:"globalID"`
-	Time     time.Time `json:"time"`
-	Type     string    `json:"type"`
 }
 
 type SyncthingSystemStatus struct {
@@ -432,3 +428,16 @@ type SyncStatusCompletion struct {
 }
 
 // EVENTS PAYLOAD
+
+type SyncthingEvent struct {
+	ID       int             `json:"id"`
+	GlobalID int             `json:"globalID"`
+	Time     time.Time       `json:"time"`
+	Type     string          `json:"type"`
+	Data     json.RawMessage `json:"data"`
+}
+
+type FolderSummaryEvent struct {
+	Folder  string                `json:"folder"`
+	Summary SyncthingFolderStatus `json:"summary"`
+}

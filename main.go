@@ -397,7 +397,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		cmds := make([]tea.Cmd, 0)
 		for _, e := range msg.events {
-			if e.Type == "StateChanged" || e.Type == "FolderPaused" || e.Type == "ConfigSaved" {
+			if e.Type == "StateChanged" || e.Type == "FolderPaused" {
 				cmds = append(cmds, fetchConfig(m.syncthingApiKey))
 				break
 			}
@@ -413,6 +413,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					cmds = append(cmds, fetchDeviceCompletion(m.syncthingApiKey, d.DeviceID))
 				}
 				break
+			}
+		}
+		for _, e := range msg.events {
+			if e.Type == "FolderSummary" {
+				var foo FolderSummaryEvent
+				err := json.Unmarshal(e.Data, &foo)
+				if err != nil {
+					// TODO figure out how to handle this
+					continue
+				}
+				m.folderStatuses[foo.Folder] = foo.Summary
+			}
+
+			if e.Type == "ConfigSaved" {
+				var foo Config
+				err := json.Unmarshal(e.Data, &foo)
+				if err != nil {
+					// TODO figure out how to handle this
+					continue
+				}
+				m.config = foo
 			}
 		}
 		cmds = append(cmds, fetchEvents(m.syncthingApiKey, since, false))
@@ -722,6 +743,7 @@ func spaceAroundTable() *table.Table {
 }
 
 func viewFolder(folder GroupedFolderData, devices []DeviceConfig, myID string, expanded bool) string {
+	status := folderStatus(folder)
 	folderStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder(), true).
 		PaddingLeft(1).
@@ -730,11 +752,22 @@ func viewFolder(folder GroupedFolderData, devices []DeviceConfig, myID string, e
 		Width(60)
 	folderStyleInnerWidth := folderStyle.GetWidth() - folderStyle.GetHorizontalPadding()
 	boldStyle := lipgloss.NewStyle().Bold(true)
+	var label string
+	if folder.status.NeedBytes > 0 && status == Syncing {
+		syncPercent := float64(folder.status.GlobalBytes-folder.status.NeedBytes) / float64(folder.status.GlobalBytes) * 100
+		label = fmt.Sprintf(
+			"%s (%.0f%%, %s)",
+			folderStatusLabel(status),
+			syncPercent,
+			humanize.IBytes(uint64(folder.status.NeedBytes)))
+	} else {
+		label = folderStatusLabel(status)
+	}
 	header := spaceAroundTable().
 		Width(folderStyleInnerWidth).
 		Row(
 			boldStyle.Render(folder.config.Label),
-			lipgloss.NewStyle().Foreground(folderColor(folder)).Bold(true).Render(folderStatusLabel(folder)),
+			lipgloss.NewStyle().Foreground(folderColor(folder)).Bold(true).Render(label),
 		)
 
 	verticalViews := make([]string, 0)
@@ -766,32 +799,64 @@ func viewFolder(folder GroupedFolderData, devices []DeviceConfig, myID string, e
 			folderType = "unknown"
 		}
 
-		verticalViews = append(
-			verticalViews,
-			spaceAroundTable().
-				Width(folderStyleInnerWidth).
-				Row("Folder ID", folder.config.ID).
-				Row("Folder Path", folder.config.Path).
-				Row("Folder Type", folderType).
-				Row("Global State",
-					fmt.Sprintf("📄 %d 📁 %d 📁 %s",
-						folder.status.GlobalFiles,
-						folder.status.GlobalDirectories,
-						humanize.IBytes(uint64(folder.status.GlobalBytes))),
-				).
-				Row("Local State",
-					fmt.Sprintf("📄 %d 📁 %d 📁 %s",
-						folder.status.LocalFiles,
-						folder.status.LocalDirectories,
-						humanize.IBytes(uint64(folder.status.LocalBytes))),
-				).
-				Row("Rescans ", fmt.Sprintf("%s  %s", HumanizeDuration(folder.config.RescanIntervalS), foo)).
-				Row("File Pull Order", fmt.Sprint(folder.config.Order)).
-				Row("File Versioning", fmt.Sprint(folder.config.Versioning.Type)).
-				Row("Shared With", strings.Join(sharedDevices, ", ")).
-				Row("Last Scan", fmt.Sprint(folder.stats.LastScan)).
-				Row("Last File", fmt.Sprint(folder.stats.LastFile.Filename)).
-				Render())
+		type RowTuple = lo.Tuple2[string, string]
+
+		topRows := []RowTuple{
+			lo.T2("Folder ID", folder.config.ID),
+			lo.T2("Folder Path", folder.config.Path),
+			lo.T2("Global State",
+				fmt.Sprintf("📄 %d 📁 %d 📁 %s",
+					folder.status.GlobalFiles,
+					folder.status.GlobalDirectories,
+					humanize.IBytes(uint64(folder.status.GlobalBytes))),
+			),
+			lo.T2("Local State",
+				fmt.Sprintf("📄 %d 📁 %d 📁 %s",
+					folder.status.LocalFiles,
+					folder.status.LocalDirectories,
+					humanize.IBytes(uint64(folder.status.LocalBytes))),
+			),
+		}
+
+		var middleRows []RowTuple
+		switch status {
+		case OutOfSync, Syncing, SyncPrepare:
+			middleRows = []RowTuple{lo.T2(
+				"Out of Sync Items",
+				fmt.Sprintf("%d items, %s", folder.status.NeedFiles, humanize.IBytes(uint64(folder.status.NeedBytes))),
+			)}
+		case LocalAdditions, LocalUnencrypted:
+			middleRows = []RowTuple{lo.T2(
+				"Locally Changed Items",
+				fmt.Sprintf("%d items, %s",
+					folder.status.ReceiveOnlyChangedFiles,
+					humanize.IBytes(uint64(folder.status.ReceiveOnlyChangedBytes))),
+			)}
+		case Scanning, Idle, FailedItems, Error, Paused, Unknown, Unshared:
+
+		}
+
+		bottomRows := []RowTuple{
+			lo.T2("Folder Type", folderType),
+			lo.T2("Rescans ", fmt.Sprintf("%s  %s", HumanizeDuration(folder.config.RescanIntervalS), foo)),
+			lo.T2("File Pull Order", fmt.Sprint(folder.config.Order)),
+			lo.T2("File Versioning", fmt.Sprint(folder.config.Versioning.Type)),
+			lo.T2("Shared With", strings.Join(sharedDevices, ", ")),
+			lo.T2("Last Scan", fmt.Sprint(folder.stats.LastScan)),
+			lo.T2("Last File", fmt.Sprint(folder.stats.LastFile.Filename)),
+		}
+
+		bar := spaceAroundTable().Width(folderStyleInnerWidth)
+		for _, r := range topRows {
+			bar = bar.Row(r.Unpack())
+		}
+		for _, r := range middleRows {
+			bar = bar.Row(r.Unpack())
+		}
+		for _, r := range bottomRows {
+			bar = bar.Row(r.Unpack())
+		}
+		verticalViews = append(verticalViews, bar.Render())
 
 		footerStyle := lipgloss.
 			NewStyle().
@@ -802,7 +867,7 @@ func viewFolder(folder GroupedFolderData, devices []DeviceConfig, myID string, e
 			Mark(folder.config.ID+"/pause",
 				btnStyle.
 					Render(lo.Ternary(
-						folderState(folder) == Paused,
+						folderStatus(folder) == Paused,
 						"Resume",
 						"Pause",
 					)))
@@ -978,10 +1043,11 @@ func shortIdentification(id string) string {
 	return strings.ToUpper(id[0:dashIndex])
 }
 
-type FolderState int
+type FolderStatus int
 
 const (
-	Idle FolderState = iota
+	Idle FolderStatus = iota
+	SyncPrepare
 	Syncing
 	Error
 	Paused
@@ -994,10 +1060,15 @@ const (
 	Unknown
 )
 
-func folderState(foo GroupedFolderData) FolderState {
+func folderStatus(foo GroupedFolderData) FolderStatus {
 	if foo.status.State == "syncing" {
 		return Syncing
 	}
+
+	if foo.status.State == "sync-preparing" {
+		return SyncPrepare
+	}
+
 	if foo.status.State == "scanning" {
 		return Scanning
 	}
@@ -1055,8 +1126,8 @@ func deviceStatus(device GroupedDeviceData, currentTime time.Time) DeviceStatus 
 	if device.config.Paused {
 		return lo.Ternary(isUnused, DeviceUnusedPaused, DevicePaused)
 	}
-
 	if device.connection.Connected {
+		// TODO BUG. when device doesnt contain any completion data and all folders are paused. we show device as syncing 0% but it should be up to date
 		insync := lo.Ternary(isUnused, DeviceUnusedInSync, DeviceInSync)
 		return lo.Ternary(
 			int(device.completion.Completion) == 100,
@@ -1136,13 +1207,13 @@ func deviceColor(state DeviceStatus) lipgloss.AdaptiveColor {
 	return lipgloss.AdaptiveColor{}
 }
 
-func folderStatusLabel(foo GroupedFolderData) string {
-	switch folderState(foo) {
+func folderStatusLabel(foo FolderStatus) string {
+	switch foo {
 	case Idle:
 		return "Up to Date"
 	case Scanning:
 		return "Scanning"
-	case Syncing:
+	case Syncing, SyncPrepare:
 		return "Syncing"
 	case Paused:
 		return "Paused"
@@ -1166,12 +1237,12 @@ func folderStatusLabel(foo GroupedFolderData) string {
 }
 
 func folderColor(foo GroupedFolderData) lipgloss.AdaptiveColor {
-	switch folderState(foo) {
+	switch folderStatus(foo) {
 	case Idle:
 		return successColor
 	case Scanning:
 		return lipgloss.AdaptiveColor{Light: "#58b5dc", Dark: "#58b5dc"}
-	case Syncing:
+	case Syncing, SyncPrepare:
 		return lipgloss.AdaptiveColor{Light: "#58b5dc", Dark: "#58b5dc"}
 	case Paused:
 		return lipgloss.AdaptiveColor{Light: "", Dark: ""}
