@@ -97,7 +97,7 @@ func (m model) Init() tea.Cmd {
 	return tea.Batch(
 		fetchConfig(m.syncthingApiKey),
 		fetchDeviceStats(m.syncthingApiKey),
-		fetchEvents(m.syncthingApiKey, 0),
+		fetchEvents(m.syncthingApiKey, 0, true),
 		fetchFolderStats(m.syncthingApiKey),
 		fetchSystemConnections(m.syncthingApiKey),
 		fetchSystemStatus(m.syncthingApiKey),
@@ -116,8 +116,9 @@ type FetchedFolderStatus struct {
 }
 
 type FetchedEventsMsg struct {
-	events []SyncthingEvent
-	err    error
+	events       []SyncthingEvent
+	firstRequest bool
+	err          error
 }
 
 type FetchedSystemStatusMsg struct {
@@ -184,7 +185,7 @@ func fetchFolderStatus(apiKey string, folderID string) tea.Cmd {
 	}
 }
 
-func fetchEvents(apiKey string, since int) tea.Cmd {
+func fetchEvents(apiKey string, since int, isFirstRequest bool) tea.Cmd {
 	return func() tea.Msg {
 		var events []SyncthingEvent
 		params := url.Values{}
@@ -194,7 +195,7 @@ func fetchEvents(apiKey string, since int) tea.Cmd {
 			return FetchedEventsMsg{err: err}
 		}
 
-		return FetchedEventsMsg{events: events}
+		return FetchedEventsMsg{events: events, firstRequest: isFirstRequest}
 	}
 }
 
@@ -389,6 +390,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(msg.events) > 0 {
 			since = msg.events[len(msg.events)-1].ID
 		}
+
+		if msg.firstRequest {
+			return m, fetchEvents(m.syncthingApiKey, since, false)
+		}
+
 		cmds := make([]tea.Cmd, 0)
 		for _, e := range msg.events {
 			if e.Type == "StateChanged" || e.Type == "FolderPaused" || e.Type == "ConfigSaved" {
@@ -409,7 +415,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 		}
-		cmds = append(cmds, fetchEvents(m.syncthingApiKey, since))
+		cmds = append(cmds, fetchEvents(m.syncthingApiKey, since, false))
 		return m, tea.Batch(cmds...)
 	case FetchedSystemStatusMsg:
 		if msg.err != nil {
@@ -818,13 +824,24 @@ func viewDevice(device GroupedDeviceData, currentTime time.Time) string {
 		BorderForeground(color)
 
 	containerInnerWidth := container.GetWidth() - container.GetHorizontalPadding()
+	var deviceStatusLabel string
+	if int(device.completion.Completion) != 100 && status == DeviceSyncing {
+		deviceStatusLabel = fmt.Sprintf(
+			"%s (%d%%, %s)",
+			deviceLabel(status),
+			int(device.completion.Completion),
+			humanize.IBytes(uint64(device.completion.NeedBytes)))
+	} else {
+		deviceStatusLabel = deviceLabel(status)
+	}
+
 	header := lipgloss.NewStyle().Bold(true).Render(
 		zone.Mark(device.config.DeviceID, spaceAroundTable().Width(containerInnerWidth).
 			Row(device.config.Name,
 				lipgloss.
 					NewStyle().
 					Foreground(color).
-					Render(deviceLabel(status))).
+					Render(deviceStatusLabel)).
 			Render()),
 	)
 
@@ -872,7 +889,7 @@ func viewDevice(device GroupedDeviceData, currentTime time.Time) string {
 				),
 			)
 		if status == DeviceSyncing {
-			table.Row("Out of Sync Items", "todo") // TODO implement this
+			table.Row("Out of Sync Items", fmt.Sprint(device.completion.NeedItems))
 		}
 	} else {
 		table.
@@ -1212,7 +1229,7 @@ func fetchBytes(url string, apiKey string, bodyType any) error {
 
 	err = json.Unmarshal(body, &bodyType)
 	if err != nil {
-		return fmt.Errorf("Error unmarshalling JSON: %w", err)
+		return fmt.Errorf("error unmarshalling JSON: %w", err)
 	}
 
 	return nil
@@ -1221,7 +1238,7 @@ func fetchBytes(url string, apiKey string, bodyType any) error {
 func put(url string, apiKey string, body any) error {
 	jsonData, err := json.Marshal(body)
 	if err != nil {
-		return fmt.Errorf("Error marshalling JSON: %w", err)
+		return fmt.Errorf("error marshalling JSON: %w", err)
 	}
 	req, err := http.NewRequest(http.MethodPut, url, bytes.NewBuffer(jsonData))
 	if err != nil {
@@ -1273,6 +1290,7 @@ func post(url string, apiKey string) error {
 func main() {
 	zone.NewGlobal()
 	p := tea.NewProgram(initModel(), tea.WithAltScreen(), tea.WithMouseCellMotion())
+
 	if _, err := p.Run(); err != nil {
 		fmt.Println(err)
 		os.Exit(1)

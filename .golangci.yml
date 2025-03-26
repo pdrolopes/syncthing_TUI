@@ -1,9 +1,29 @@
+version: "2"
 linters:
   enable:
+    - exhaustive
     - thelper
-    - gofumpt
     - tparallel
     - unconvert
     - unparam
     - wastedassign
-    - exhaustive
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gofumpt
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

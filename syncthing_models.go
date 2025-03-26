@@ -430,3 +430,5 @@ type SyncStatusCompletion struct {
 	RemoteState string  `json:"remoteState"`
 	Sequence    int     `json:"sequence"`
 }
+
+// EVENTS PAYLOAD
