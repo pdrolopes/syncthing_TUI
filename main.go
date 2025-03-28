@@ -568,6 +568,7 @@ func (m model) View() string {
 		completion, hasCompletion := m.deviceCompletion[device.DeviceID]
 		stats, hasStats := m.deviceStats[device.DeviceID]
 		connection, hasConnection := m.connections.Connections[device.DeviceID]
+		prevConnection := m.prevConnections.Connections[device.DeviceID]
 		folders := lo.Filter(m.config.Folders, func(folder SyncthingFolderConfig, index int) bool {
 			return lo.SomeBy(folder.Devices, func(sharedDevice FolderDevice) bool {
 				return device.DeviceID == sharedDevice.DeviceID
@@ -575,15 +576,16 @@ func (m model) View() string {
 		})
 		_, expanded := m.expandedFields[device.DeviceID]
 		return GroupedDeviceData{
-			config:        device,
-			completion:    completion,
-			hasCompletion: hasCompletion,
-			stats:         stats,
-			hasStats:      hasStats,
-			connection:    connection,
-			hasConnection: hasConnection,
-			folders:       folders,
-			expanded:      expanded,
+			config:         device,
+			completion:     completion,
+			hasCompletion:  hasCompletion,
+			stats:          stats,
+			hasStats:       hasStats,
+			connection:     connection,
+			hasConnection:  hasConnection,
+			prevConnection: prevConnection,
+			folders:        folders,
+			expanded:       expanded,
 		}
 	})
 
