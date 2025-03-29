@@ -32,7 +32,7 @@ type errMsg error
 // TODO currently we are skipping tls verification for the https://localhost path. What can we do about it
 // TODO decide folder/device widths and the responsiveness based on terminal width
 // TODO create scrollable interface
-// TODO handle ConfigSaved event and parse the config that ithas
+// TODO when there a no more bytes to be transfered but still have files to be delete. show as 95%
 
 type model struct {
 	dump              io.Writer
@@ -44,8 +44,10 @@ type model struct {
 	ongoingUserAction bool
 	currentTime       time.Time
 
+	// http data
+	httpData HttpData
+
 	// Syncthing DATA
-	syncthingApiKey  string
 	config           Config
 	version          SyncthingSystemVersion
 	status           SyncthingSystemStatus
@@ -57,12 +59,23 @@ type model struct {
 	folderStatuses   map[string]SyncthingFolderStatus
 }
 
+type HttpData struct {
+	// TODO think of a better name
+	client http.Client
+	apiKey string
+	url    url.URL
+}
+
 // ------------------ constants -----------------------
 const (
 	REFETCH_STATUS_INTERVAL       = 10 * time.Second
 	REFETCH_CURRENT_TIME_INTERVAL = 1 * time.Minute
 	PAUSE_ALL_MARK                = "pause-all"
 	RESUME_ALL_MARK               = "resume-all"
+	DEFAULT_SYNCTHING_URL         = "http://localhost:8384"
+
+	// Syncthing rest paths
+	DB_COMPLETION_PATH = "/rest/db/completion"
 )
 
 var VERSION = "unknown"
@@ -82,11 +95,33 @@ func initModel() model {
 		}
 	}
 	syncthingApiKey := os.Getenv("SYNCTHING_API_KEY")
+	envUrl, hasEnv := os.LookupEnv("SYNCTHING_URL")
+	if !hasEnv {
+		envUrl = DEFAULT_SYNCTHING_URL
+	}
+	syncthingURL, err := url.Parse(envUrl)
+	if err != nil {
+		err = fmt.Errorf("invalid syncthing host: %w", err)
+	}
+
+	client := http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true, // Skip certificate verification
+			},
+		},
+	}
+	foo := HttpData{
+		apiKey: syncthingApiKey,
+		client: client,
+		url:    *syncthingURL,
+	}
 
 	return model{
 		loading:          true,
-		syncthingApiKey:  syncthingApiKey,
+		httpData:         foo,
 		dump:             dump,
+		err:              err,
 		folderStatuses:   make(map[string]SyncthingFolderStatus),
 		expandedFields:   make(map[string]struct{}),
 		deviceCompletion: make(map[string]SyncStatusCompletion),
@@ -95,13 +130,13 @@ func initModel() model {
 
 func (m model) Init() tea.Cmd {
 	return tea.Batch(
-		fetchConfig(m.syncthingApiKey),
-		fetchDeviceStats(m.syncthingApiKey),
-		fetchEvents(m.syncthingApiKey, 0, true),
-		fetchFolderStats(m.syncthingApiKey),
-		fetchSystemConnections(m.syncthingApiKey),
-		fetchSystemStatus(m.syncthingApiKey),
-		fetchSystemVersion(m.syncthingApiKey),
+		fetchConfig(m.httpData),
+		fetchDeviceStats(m.httpData),
+		fetchEvents(m.httpData, 0),
+		fetchFolderStats(m.httpData),
+		fetchSystemConnections(m.httpData),
+		fetchSystemStatus(m.httpData),
+		fetchSystemVersion(m.httpData),
 		tea.SetWindowTitle("tui-syncthing"),
 		currentTimeCmd(),
 		tea.Tick(REFETCH_STATUS_INTERVAL, func(time.Time) tea.Msg { return TickedRefetchStatusMsg{} }),
@@ -116,9 +151,9 @@ type FetchedFolderStatus struct {
 }
 
 type FetchedEventsMsg struct {
-	events       []SyncthingEvent
-	firstRequest bool
-	err          error
+	events []SyncthingEvent
+	since  int
+	err    error
 }
 
 type FetchedSystemStatusMsg struct {
@@ -152,9 +187,10 @@ type FetchedDeviceStats struct {
 }
 
 type FetchedDeviceCompletion struct {
-	id         string
-	completion SyncStatusCompletion
-	err        error
+	deviceID      string
+	completion    SyncStatusCompletion
+	hasCompletion bool
+	err           error
 }
 
 type TickedRefetchStatusMsg struct{}
@@ -168,14 +204,14 @@ type UserPostPutEndedMsg struct {
 	err    error
 }
 
-func fetchFolderStatus(apiKey string, folderID string) tea.Cmd {
+func fetchFolderStatus(foo HttpData, folderID string) tea.Cmd {
 	return func() tea.Msg {
 		params := url.Values{}
 		params.Add("folder", folderID)
 		var statusFolder SyncthingFolderStatus
 		err := fetchBytes(
 			"http://localhost:8384/rest/db/status?"+params.Encode(),
-			apiKey,
+			foo.apiKey,
 			&statusFolder)
 		if err != nil {
 			return FetchedFolderStatus{err: err}
@@ -185,24 +221,24 @@ func fetchFolderStatus(apiKey string, folderID string) tea.Cmd {
 	}
 }
 
-func fetchEvents(apiKey string, since int, isFirstRequest bool) tea.Cmd {
+func fetchEvents(foo HttpData, since int) tea.Cmd {
 	return func() tea.Msg {
 		var events []SyncthingEvent
 		params := url.Values{}
 		params.Add("since", strconv.Itoa(since))
-		err := fetchBytes("http://localhost:8384/rest/events?"+params.Encode(), apiKey, &events)
+		err := fetchBytes("http://localhost:8384/rest/events?"+params.Encode(), foo.apiKey, &events)
 		if err != nil {
-			return FetchedEventsMsg{err: err}
+			return FetchedEventsMsg{err: err, since: since}
 		}
 
-		return FetchedEventsMsg{events: events, firstRequest: isFirstRequest}
+		return FetchedEventsMsg{events: events, since: since}
 	}
 }
 
-func fetchSystemStatus(apiKey string) tea.Cmd {
+func fetchSystemStatus(foo HttpData) tea.Cmd {
 	return func() tea.Msg {
 		var status SyncthingSystemStatus
-		err := fetchBytes("http://localhost:8384/rest/system/status", apiKey, &status)
+		err := fetchBytes("http://localhost:8384/rest/system/status", foo.apiKey, &status)
 		if err != nil {
 			return FetchedSystemStatusMsg{err: err}
 		}
@@ -211,10 +247,10 @@ func fetchSystemStatus(apiKey string) tea.Cmd {
 	}
 }
 
-func fetchSystemVersion(apiKey string) tea.Cmd {
+func fetchSystemVersion(foo HttpData) tea.Cmd {
 	return func() tea.Msg {
 		var version SyncthingSystemVersion
-		err := fetchBytes("http://localhost:8384/rest/system/version", apiKey, &version)
+		err := fetchBytes("http://localhost:8384/rest/system/version", foo.apiKey, &version)
 		if err != nil {
 			return FetchedSystemVersionMsg{err: err}
 		}
@@ -223,10 +259,10 @@ func fetchSystemVersion(apiKey string) tea.Cmd {
 	}
 }
 
-func fetchSystemConnections(apiKey string) tea.Cmd {
+func fetchSystemConnections(foo HttpData) tea.Cmd {
 	return func() tea.Msg {
 		var connections SyncthingSystemConnections
-		err := fetchBytes("http://localhost:8384/rest/system/connections", apiKey, &connections)
+		err := fetchBytes("http://localhost:8384/rest/system/connections", foo.apiKey, &connections)
 		if err != nil {
 			return FetchedSystemConnectionsMsg{err: err}
 		}
@@ -235,10 +271,10 @@ func fetchSystemConnections(apiKey string) tea.Cmd {
 	}
 }
 
-func fetchConfig(apiKey string) tea.Cmd {
+func fetchConfig(foo HttpData) tea.Cmd {
 	return func() tea.Msg {
 		var config Config
-		err := fetchBytes("http://localhost:8384/rest/config", apiKey, &config)
+		err := fetchBytes("http://localhost:8384/rest/config", foo.apiKey, &config)
 		if err != nil {
 			return FetchedConfig{err: err}
 		}
@@ -247,10 +283,10 @@ func fetchConfig(apiKey string) tea.Cmd {
 	}
 }
 
-func fetchFolderStats(apiKey string) tea.Cmd {
+func fetchFolderStats(foo HttpData) tea.Cmd {
 	return func() tea.Msg {
 		var folderStats map[string]FolderStats
-		err := fetchBytes("http://localhost:8384/rest/stats/folder", apiKey, &folderStats)
+		err := fetchBytes("http://localhost:8384/rest/stats/folder", foo.apiKey, &folderStats)
 		if err != nil {
 			return FetchedFolderStats{err: err}
 		}
@@ -259,10 +295,10 @@ func fetchFolderStats(apiKey string) tea.Cmd {
 	}
 }
 
-func fetchDeviceStats(apiKey string) tea.Cmd {
+func fetchDeviceStats(foo HttpData) tea.Cmd {
 	return func() tea.Msg {
 		var deviceStats map[string]DeviceStats
-		err := fetchBytes("http://localhost:8384/rest/stats/device", apiKey, &deviceStats)
+		err := fetchBytes("http://localhost:8384/rest/stats/device", foo.apiKey, &deviceStats)
 		if err != nil {
 			return FetchedDeviceStats{err: err}
 		}
@@ -271,33 +307,61 @@ func fetchDeviceStats(apiKey string) tea.Cmd {
 	}
 }
 
-func fetchDeviceCompletion(apiKey, id string) tea.Cmd {
+func fetchDeviceCompletion(foo HttpData, id string) tea.Cmd {
 	return func() tea.Msg {
-		var deviceCompletion SyncStatusCompletion
 		params := url.Values{}
 		params.Add("device", id)
-		err := fetchBytes("http://localhost:8384/rest/db/completion?"+params.Encode(), apiKey, &deviceCompletion)
+		fooUrl := foo.url.JoinPath(DB_COMPLETION_PATH)
+		fooUrl.RawQuery = params.Encode()
+		req, err := http.NewRequest(http.MethodGet, fooUrl.String(), nil)
 		if err != nil {
 			return FetchedDeviceCompletion{err: err}
 		}
 
-		return FetchedDeviceCompletion{id: id, completion: deviceCompletion}
+		req.Header.Set("X-API-Key", foo.apiKey)
+		resp, err := foo.client.Do(req)
+		if err != nil {
+			return FetchedDeviceCompletion{err: err}
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode == http.StatusNotFound {
+			return FetchedDeviceCompletion{}
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return FetchedDeviceCompletion{err: err}
+		}
+
+		var deviceCompletion SyncStatusCompletion
+		err = json.Unmarshal(body, &deviceCompletion)
+		if err != nil {
+			err = fmt.Errorf("error unmarshalling JSON: %w", err)
+			return FetchedDeviceCompletion{err: err}
+		}
+
+		return FetchedDeviceCompletion{
+			deviceID:      id,
+			completion:    deviceCompletion,
+			hasCompletion: true,
+		}
 	}
 }
 
-func putFolder(apiKey string, folders ...SyncthingFolderConfig) tea.Cmd {
+func putFolder(foo HttpData, folders ...SyncthingFolderConfig) tea.Cmd {
 	return func() tea.Msg {
-		err := put("http://localhost:8384/rest/config/folders/", apiKey, folders)
+		err := put("http://localhost:8384/rest/config/folders/", foo.apiKey, folders)
 		ids := strings.Join(lo.Map(folders, func(item SyncthingFolderConfig, index int) string { return item.ID }), ", ")
 		return UserPostPutEndedMsg{err: err, action: "putFolder: " + ids}
 	}
 }
 
-func rescanFolder(apiKey string, folderID string) tea.Cmd {
+func rescanFolder(foo HttpData, folderID string) tea.Cmd {
 	return func() tea.Msg {
 		params := url.Values{}
 		params.Add("folder", folderID)
-		err := post("http://localhost:8384/rest/db/scan/"+"?"+params.Encode(), apiKey)
+		err := post("http://localhost:8384/rest/db/scan/"+"?"+params.Encode(), foo.apiKey)
 		return UserPostPutEndedMsg{err: err, action: "rescanFolder: " + folderID}
 	}
 }
@@ -330,7 +394,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return item
 			})
 			m.ongoingUserAction = true
-			return m, putFolder(m.syncthingApiKey, pausedFolders...)
+			return m, putFolder(m.httpData, pausedFolders...)
 		}
 
 		if zone.Get(RESUME_ALL_MARK).InBounds(msg) {
@@ -339,7 +403,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return item
 			})
 			m.ongoingUserAction = true
-			return m, putFolder(m.syncthingApiKey, resumedFolders...)
+			return m, putFolder(m.httpData, resumedFolders...)
 		}
 
 		for _, folder := range m.config.Folders {
@@ -355,12 +419,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if zone.Get(folder.ID+"/pause").InBounds(msg) && !m.ongoingUserAction {
 				folder.Paused = !folder.Paused
 				m.ongoingUserAction = true
-				return m, putFolder(m.syncthingApiKey, folder)
+				return m, putFolder(m.httpData, folder)
 			}
 
 			if zone.Get(folder.ID+"/rescan").InBounds(msg) && !m.ongoingUserAction {
 				m.ongoingUserAction = true
-				return m, rescanFolder(m.syncthingApiKey, folder.ID)
+				return m, rescanFolder(m.httpData, folder.ID)
 			}
 		}
 
@@ -391,14 +455,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			since = msg.events[len(msg.events)-1].ID
 		}
 
-		if msg.firstRequest {
-			return m, fetchEvents(m.syncthingApiKey, since, false)
+		// ignore the first request
+		if msg.since == 0 {
+			return m, fetchEvents(m.httpData, since)
 		}
 
 		cmds := make([]tea.Cmd, 0)
 		for _, e := range msg.events {
 			if e.Type == "StateChanged" || e.Type == "FolderPaused" {
-				cmds = append(cmds, fetchConfig(m.syncthingApiKey))
+				cmds = append(cmds, fetchConfig(m.httpData))
 				break
 			}
 		}
@@ -410,7 +475,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				e.Type == "DevicePaused" ||
 				e.Type == "DeviceResumed" {
 				for _, d := range m.config.Devices {
-					cmds = append(cmds, fetchDeviceCompletion(m.syncthingApiKey, d.DeviceID))
+					cmds = append(cmds, fetchDeviceCompletion(m.httpData, d.DeviceID))
 				}
 				break
 			}
@@ -436,7 +501,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.config = foo
 			}
 		}
-		cmds = append(cmds, fetchEvents(m.syncthingApiKey, since, false))
+		cmds = append(cmds, fetchEvents(m.httpData, since))
 		return m, tea.Batch(cmds...)
 	case FetchedSystemStatusMsg:
 		if msg.err != nil {
@@ -474,8 +539,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case TickedRefetchStatusMsg:
 		cmds := tea.Batch(
-			fetchSystemConnections(m.syncthingApiKey),
-			fetchSystemStatus(m.syncthingApiKey),
+			fetchSystemConnections(m.httpData),
+			fetchSystemStatus(m.httpData),
 			tea.Tick(REFETCH_STATUS_INTERVAL, func(time.Time) tea.Msg { return TickedRefetchStatusMsg{} }),
 		)
 		return m, cmds
@@ -492,10 +557,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.config = msg.config
 		cmds := make([]tea.Cmd, 0)
 		for _, f := range msg.config.Folders {
-			cmds = append(cmds, fetchFolderStatus(m.syncthingApiKey, f.ID))
+			cmds = append(cmds, fetchFolderStatus(m.httpData, f.ID))
 		}
 		for _, d := range msg.config.Devices {
-			cmds = append(cmds, fetchDeviceCompletion(m.syncthingApiKey, d.DeviceID))
+			cmds = append(cmds, fetchDeviceCompletion(m.httpData, d.DeviceID))
 		}
 
 		return m, tea.Batch(cmds...)
@@ -522,7 +587,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		m.deviceCompletion[msg.id] = msg.completion
+		if msg.hasCompletion {
+			m.deviceCompletion[msg.deviceID] = msg.completion
+		} else {
+			delete(m.deviceCompletion, msg.deviceID)
+		}
+
 		return m, nil
 	case TickedCurrentTimeMsg:
 		m.currentTime = msg.currentTime
@@ -543,7 +613,7 @@ func (m model) View() string {
 		return m.err.Error()
 	}
 
-	if m.syncthingApiKey == "" {
+	if m.httpData.apiKey == "" {
 		return "Missing api key to acess syncthing. Env: SYNCTHING_API_KEY"
 	}
 
@@ -1129,10 +1199,14 @@ func deviceStatus(device GroupedDeviceData, currentTime time.Time) DeviceStatus 
 		return lo.Ternary(isUnused, DeviceUnusedPaused, DevicePaused)
 	}
 	if device.connection.Connected {
-		// TODO BUG. when device doesnt contain any completion data and all folders are paused. we show device as syncing 0% but it should be up to date
 		insync := lo.Ternary(isUnused, DeviceUnusedInSync, DeviceInSync)
+		// when all folders are paused. completion doesnt have Completion value.
+		// We also check that there isnt any needs things to assert that device is in sync
+		needsSomething := device.completion.NeedBytes != 0 &&
+			device.completion.NeedItems != 0 &&
+			device.completion.NeedDeletes != 0
 		return lo.Ternary(
-			int(device.completion.Completion) == 100,
+			int(device.completion.Completion) == 100 || !needsSomething,
 			insync,
 			DeviceSyncing)
 	}
