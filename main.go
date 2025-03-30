@@ -488,13 +488,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		cmds := make([]tea.Cmd, 0)
 		for _, e := range msg.events {
-			if e.Type == "FolderPaused" {
-				cmds = append(cmds, fetchConfig(m.httpData))
-				break
-			}
-		}
-
-		for _, e := range msg.events {
 			if e.Type == "DeviceConnected" ||
 				e.Type == "DeviceDisconnected" ||
 				e.Type == "DeviceDiscovered" ||
