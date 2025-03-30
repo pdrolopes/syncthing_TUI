@@ -441,3 +441,17 @@ type FolderSummaryEvent struct {
 	Folder  string                `json:"folder"`
 	Summary SyncthingFolderStatus `json:"summary"`
 }
+
+type FolderScanProgressEvent struct {
+	Total   int64   `json:"total"`
+	Rate    float64 `json:"rate"`
+	Current int64   `json:"current"`
+	Folder  string  `json:"folder"`
+}
+
+type StateChangedEvent struct {
+	Folder   string  `json:"folder"`
+	From     string  `json:"from"`
+	Duration float64 `json:"duration"`
+	To       string  `json:"to"`
+}

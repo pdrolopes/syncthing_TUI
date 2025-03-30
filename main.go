@@ -29,9 +29,6 @@ type errMsg error
 // https://docs.syncthing.net/dev/rest.html#rest-pagination
 
 // TODO create const for syncthing ports paths
-// TODO currently we are skipping tls verification for the https://localhost path. What can we do about it
-// TODO decide folder/device widths and the responsiveness based on terminal width
-// TODO create scrollable interface
 // TODO when there a no more bytes to be transfered but still have files to be delete. show as 95%
 
 type model struct {
@@ -57,6 +54,7 @@ type model struct {
 	deviceStats      map[string]DeviceStats
 	deviceCompletion map[string]SyncStatusCompletion
 	folderStatuses   map[string]SyncthingFolderStatus
+	scanProgress     map[string]FolderScanProgressEvent
 }
 
 type HttpData struct {
@@ -72,10 +70,13 @@ const (
 	REFETCH_CURRENT_TIME_INTERVAL = 1 * time.Minute
 	PAUSE_ALL_MARK                = "pause-all"
 	RESUME_ALL_MARK               = "resume-all"
+	RESCAN_ALL_MARK               = "rescan-all"
+	ADD_FOLDER_MARK               = "add-folder"
 	DEFAULT_SYNCTHING_URL         = "http://localhost:8384"
 
 	// Syncthing rest paths
 	DB_COMPLETION_PATH = "/rest/db/completion"
+	DB_SCAN            = "/rest/db/scan"
 )
 
 var VERSION = "unknown"
@@ -125,6 +126,7 @@ func initModel() model {
 		folderStatuses:   make(map[string]SyncthingFolderStatus),
 		expandedFields:   make(map[string]struct{}),
 		deviceCompletion: make(map[string]SyncStatusCompletion),
+		scanProgress:     make(map[string]FolderScanProgressEvent),
 	}
 }
 
@@ -349,20 +351,37 @@ func fetchDeviceCompletion(foo HttpData, id string) tea.Cmd {
 	}
 }
 
+func postScan(foo HttpData, folderId string) tea.Cmd {
+	return func() tea.Msg {
+		params := url.Values{}
+		params.Add("folder", folderId)
+		url := foo.url.JoinPath(DB_SCAN)
+		url.RawQuery = params.Encode()
+		req, err := http.NewRequest(http.MethodPost, url.String(), nil)
+		if err != nil {
+			return nil
+		}
+
+		req.Header.Set("X-API-Key", foo.apiKey)
+		resp, err := foo.client.Do(req)
+		if err != nil {
+			return nil
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode == http.StatusNotFound {
+			return nil
+		}
+
+		return nil
+	}
+}
+
 func putFolder(foo HttpData, folders ...SyncthingFolderConfig) tea.Cmd {
 	return func() tea.Msg {
 		err := put("http://localhost:8384/rest/config/folders/", foo.apiKey, folders)
 		ids := strings.Join(lo.Map(folders, func(item SyncthingFolderConfig, index int) string { return item.ID }), ", ")
 		return UserPostPutEndedMsg{err: err, action: "putFolder: " + ids}
-	}
-}
-
-func rescanFolder(foo HttpData, folderID string) tea.Cmd {
-	return func() tea.Msg {
-		params := url.Values{}
-		params.Add("folder", folderID)
-		err := post("http://localhost:8384/rest/db/scan/"+"?"+params.Encode(), foo.apiKey)
-		return UserPostPutEndedMsg{err: err, action: "rescanFolder: " + folderID}
 	}
 }
 
@@ -386,6 +405,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseMsg:
 		if msg.Action != tea.MouseActionRelease || msg.Button != tea.MouseButtonLeft {
 			return m, nil
+		}
+
+		if zone.Get(RESCAN_ALL_MARK).InBounds(msg) {
+			cmds := make([]tea.Cmd, 0, len(m.config.Folders))
+			for _, f := range m.config.Folders {
+				cmds = append(cmds, postScan(m.httpData, f.ID))
+			}
+			return m, tea.Batch(cmds...)
 		}
 
 		if zone.Get(PAUSE_ALL_MARK).InBounds(msg) && !m.ongoingUserAction {
@@ -422,9 +449,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, putFolder(m.httpData, folder)
 			}
 
-			if zone.Get(folder.ID+"/rescan").InBounds(msg) && !m.ongoingUserAction {
-				m.ongoingUserAction = true
-				return m, rescanFolder(m.httpData, folder.ID)
+			if zone.Get(folder.ID + "/rescan").InBounds(msg) {
+				return m, postScan(m.httpData, folder.ID)
 			}
 		}
 
@@ -462,7 +488,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		cmds := make([]tea.Cmd, 0)
 		for _, e := range msg.events {
-			if e.Type == "StateChanged" || e.Type == "FolderPaused" {
+			if e.Type == "FolderPaused" {
 				cmds = append(cmds, fetchConfig(m.httpData))
 				break
 			}
@@ -499,6 +525,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					continue
 				}
 				m.config = foo
+			}
+
+			if e.Type == "FolderScanProgress" {
+				var scanProgress FolderScanProgressEvent
+				err := json.Unmarshal(e.Data, &scanProgress)
+				if err != nil {
+					// TODO figure out how to handle this
+					continue
+				}
+
+				m.scanProgress[scanProgress.Folder] = scanProgress
+			}
+
+			if e.Type == "StateChanged" {
+				var stateChanged StateChangedEvent
+				err := json.Unmarshal(e.Data, &stateChanged)
+				if err != nil {
+					// TODO figure out how to handle this
+					continue
+				}
+
+				if stateChanged.To == "scanning" {
+					delete(m.scanProgress, stateChanged.Folder)
+				}
+				if stateChanged.From == "scanning" && stateChanged.To == "idle" {
+					cmds = append(cmds, fetchFolderStats(m.httpData))
+				}
 			}
 		}
 		cmds = append(cmds, fetchEvents(m.httpData, since))
@@ -625,12 +678,15 @@ func (m model) View() string {
 	folders := lo.Map(m.config.Folders, func(folder SyncthingFolderConfig, index int) GroupedFolderData {
 		status, hasStatus := m.folderStatuses[folder.ID]
 		stats, hasStats := m.folderStats[folder.ID]
+		scanProgress, hasScanProgress := m.scanProgress[folder.ID]
 		return GroupedFolderData{
-			config:    folder,
-			status:    status,
-			hasStatus: hasStatus,
-			stats:     stats,
-			hasStats:  hasStats,
+			config:          folder,
+			status:          status,
+			hasStatus:       hasStatus,
+			stats:           stats,
+			hasStats:        hasStats,
+			scanProgress:    scanProgress,
+			hasScanProgress: hasScanProgress,
 		}
 	})
 
@@ -752,7 +808,7 @@ func viewStatus(
 			totalDirectories,
 			humanize.IBytes(uint64(totalBytes))),
 	).
-		Row("Uptime", HumanizeDuration(int(status.Uptime))).
+		Row("Uptime", HumanizeDuration(status.Uptime)).
 		Row("Syncthing Version", fmt.Sprintf("%s, %s (%s)", version.Version, osName(version.OS), archName(version.Arch))).
 		Row("Version", VERSION)
 
@@ -792,7 +848,8 @@ func viewFolders(
 	if anyFolderPaused {
 		btns = append(btns, zone.Mark(RESUME_ALL_MARK, btnStyle.Render("Resume All")))
 	}
-	btns = append(btns, zone.Mark("add-folder", btnStyle.Render("Add Folder")))
+	btns = append(btns, zone.Mark(RESCAN_ALL_MARK, btnStyle.Render("Rescan All")))
+	btns = append(btns, zone.Mark(ADD_FOLDER_MARK, btnStyle.Render("Add Folder")))
 
 	views = append(views, (lipgloss.JoinHorizontal(lipgloss.Top, btns...)))
 
@@ -832,6 +889,13 @@ func viewFolder(folder GroupedFolderData, devices []DeviceConfig, myID string, e
 			folderStatusLabel(status),
 			syncPercent,
 			humanize.IBytes(uint64(folder.status.NeedBytes)))
+	} else if folder.hasScanProgress && status == Scanning && folder.scanProgress.Total > 0 {
+		scanPercent := float64(folder.scanProgress.Current) / float64(folder.scanProgress.Total) * 100
+		label = fmt.Sprintf(
+			"%s (%.0f%%)",
+			folderStatusLabel(status),
+			scanPercent,
+		)
 	} else {
 		label = folderStatusLabel(status)
 	}
@@ -904,13 +968,22 @@ func viewFolder(folder GroupedFolderData, devices []DeviceConfig, myID string, e
 					folder.status.ReceiveOnlyChangedFiles,
 					humanize.IBytes(uint64(folder.status.ReceiveOnlyChangedBytes))),
 			)}
-		case Scanning, Idle, FailedItems, Error, Paused, Unknown, Unshared:
+		case Scanning:
+			if folder.hasScanProgress && folder.scanProgress.Rate > 0 {
+				bytesToBeScanned := folder.scanProgress.Total - folder.scanProgress.Current
+				secondsETA := int64(float64(bytesToBeScanned) / folder.scanProgress.Rate)
+				middleRows = []RowTuple{lo.T2(
+					"Scan Time Remaining",
+					ScanDuration(secondsETA),
+				)}
+			}
+		case Idle, FailedItems, Error, Paused, Unknown, Unshared:
 
 		}
 
 		bottomRows := []RowTuple{
 			lo.T2("Folder Type", folderType),
-			lo.T2("Rescans ", fmt.Sprintf("%s  %s", HumanizeDuration(folder.config.RescanIntervalS), foo)),
+			lo.T2("Rescans ", fmt.Sprintf("%s  %s", HumanizeDuration(int64(folder.config.RescanIntervalS)), foo)),
 			lo.T2("File Pull Order", fmt.Sprint(folder.config.Order)),
 			lo.T2("File Versioning", fmt.Sprint(folder.config.Versioning.Type)),
 			lo.T2("Shared With", strings.Join(sharedDevices, ", ")),
@@ -1371,11 +1444,13 @@ func byteThroughputInSeconds(before, after TotalBytes) int64 {
 }
 
 type GroupedFolderData struct {
-	config    SyncthingFolderConfig
-	status    SyncthingFolderStatus
-	hasStatus bool
-	stats     FolderStats
-	hasStats  bool
+	config          SyncthingFolderConfig
+	status          SyncthingFolderStatus
+	hasStatus       bool
+	stats           FolderStats
+	hasStats        bool
+	scanProgress    FolderScanProgressEvent
+	hasScanProgress bool
 }
 
 type GroupedDeviceData struct {
@@ -1430,30 +1505,6 @@ func put(url string, apiKey string, body any) error {
 		return fmt.Errorf("error marshalling JSON: %w", err)
 	}
 	req, err := http.NewRequest(http.MethodPut, url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return err
-	}
-
-	req.Header.Set("X-API-Key", apiKey)
-	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true, // Skip certificate verification
-			},
-		},
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	return nil
-}
-
-func post(url string, apiKey string) error {
-	req, err := http.NewRequest(http.MethodPost, url, nil)
 	if err != nil {
 		return err
 	}
