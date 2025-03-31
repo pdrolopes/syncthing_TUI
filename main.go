@@ -1268,8 +1268,8 @@ func deviceStatus(device GroupedDeviceData, currentTime time.Time) DeviceStatus 
 		insync := lo.Ternary(isUnused, DeviceUnusedInSync, DeviceInSync)
 		// when all folders are paused. completion doesnt have Completion value.
 		// We also check that there isnt any needs things to assert that device is in sync
-		needsSomething := device.completion.NeedBytes != 0 &&
-			device.completion.NeedItems != 0 &&
+		needsSomething := device.completion.NeedBytes != 0 ||
+			device.completion.NeedItems != 0 ||
 			device.completion.NeedDeletes != 0
 		return lo.Ternary(
 			int(device.completion.Completion) == 100 || !needsSomething,
