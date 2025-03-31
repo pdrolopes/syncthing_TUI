@@ -13,6 +13,8 @@ builds:
     mod_timestamp: "{{ .CommitTimestamp }}"
     flags: ["-trimpath"]
     targets: ["go_first_class"]
+    ldflags:
+      - -X main.VERSION={{.Version}}
 
 changelog:
   sort: asc
