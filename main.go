@@ -6,10 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -45,16 +45,16 @@ type model struct {
 	httpData HttpData
 
 	// Syncthing DATA
-	config           Config
-	version          SyncthingSystemVersion
-	status           SyncthingSystemStatus
-	connections      SyncthingSystemConnections
-	prevConnections  SyncthingSystemConnections
-	folderStats      map[string]FolderStats
-	deviceStats      map[string]DeviceStats
-	deviceCompletion map[string]SyncStatusCompletion
-	folderStatuses   map[string]SyncthingFolderStatus
-	scanProgress     map[string]FolderScanProgressEvent
+	config          Config
+	version         SyncthingSystemVersion
+	status          SyncthingSystemStatus
+	connections     SyncthingSystemConnections
+	prevConnections SyncthingSystemConnections
+	folderStats     map[string]FolderStats
+	deviceStats     map[string]DeviceStats
+	completion      map[string]map[string]SyncStatusCompletion
+	folderStatuses  map[string]SyncthingFolderStatus
+	scanProgress    map[string]FolderScanProgressEventData
 }
 
 type HttpData struct {
@@ -119,26 +119,31 @@ func initModel() model {
 	}
 
 	return model{
-		loading:          true,
-		httpData:         foo,
-		dump:             dump,
-		err:              err,
-		folderStatuses:   make(map[string]SyncthingFolderStatus),
-		expandedFields:   make(map[string]struct{}),
-		deviceCompletion: make(map[string]SyncStatusCompletion),
-		scanProgress:     make(map[string]FolderScanProgressEvent),
+		loading:        true,
+		httpData:       foo,
+		dump:           dump,
+		err:            err,
+		folderStatuses: make(map[string]SyncthingFolderStatus),
+		expandedFields: make(map[string]struct{}),
+		completion:     make(map[string]map[string]SyncStatusCompletion),
+		scanProgress:   make(map[string]FolderScanProgressEventData),
 	}
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(
+	fetchSystemInfo := tea.Batch(
+		fetchSystemConnections(m.httpData),
+		fetchSystemStatus(m.httpData),
+		fetchSystemVersion(m.httpData),
+	)
+	fetchOtherInfo := tea.Batch(
 		fetchConfig(m.httpData),
 		fetchDeviceStats(m.httpData),
 		fetchEvents(m.httpData, 0),
 		fetchFolderStats(m.httpData),
-		fetchSystemConnections(m.httpData),
-		fetchSystemStatus(m.httpData),
-		fetchSystemVersion(m.httpData),
+	)
+	return tea.Batch(
+		tea.Sequence(fetchSystemInfo, fetchOtherInfo),
 		tea.SetWindowTitle("tui-syncthing"),
 		currentTimeCmd(),
 		tea.Tick(REFETCH_STATUS_INTERVAL, func(time.Time) tea.Msg { return TickedRefetchStatusMsg{} }),
@@ -153,7 +158,7 @@ type FetchedFolderStatus struct {
 }
 
 type FetchedEventsMsg struct {
-	events []SyncthingEvent
+	events []SyncthingEvent[any]
 	since  int
 	err    error
 }
@@ -188,8 +193,9 @@ type FetchedDeviceStats struct {
 	err         error
 }
 
-type FetchedDeviceCompletion struct {
+type FetchedCompletion struct {
 	deviceID      string
+	folderID      string
 	completion    SyncStatusCompletion
 	hasCompletion bool
 	err           error
@@ -223,24 +229,114 @@ func fetchFolderStatus(foo HttpData, folderID string) tea.Cmd {
 	}
 }
 
-func fetchEvents(foo HttpData, since int) tea.Cmd {
+func fetchEvents(httpData HttpData, since int) tea.Cmd {
 	return func() tea.Msg {
-		var events []SyncthingEvent
 		params := url.Values{}
-		params.Add("since", strconv.Itoa(since))
-		err := fetchBytes("http://localhost:8384/rest/events?"+params.Encode(), foo.apiKey, &events)
+		params.Add("since", fmt.Sprint(since))
+		var events []SyncthingEvent[json.RawMessage]
+		err := fetchBytes("http://localhost:8384/rest/events?"+params.Encode(), httpData.apiKey, &events)
 		if err != nil {
 			return FetchedEventsMsg{err: err, since: since}
 		}
 
-		return FetchedEventsMsg{events: events, since: since}
+		parsedEvents := make([]SyncthingEvent[any], 0, len(events))
+		for _, e := range events {
+			switch e.Type {
+			case "FolderSummary":
+				var data FolderSummaryEventData
+				err := json.Unmarshal(e.Data, &data)
+				if err != nil {
+					// TODO figure out how to handle this
+					continue
+				}
+
+				parsedEvents = append(parsedEvents, SyncthingEvent[any]{
+					ID:       e.ID,
+					GlobalID: e.GlobalID,
+					Time:     e.Time,
+					Type:     e.Type,
+					Data:     data,
+				})
+			case "ConfigSaved":
+				var data Config
+				err := json.Unmarshal(e.Data, &data)
+				if err != nil {
+					// TODO figure out how to handle this
+					continue
+				}
+
+				parsedEvents = append(parsedEvents, SyncthingEvent[any]{
+					ID:       e.ID,
+					GlobalID: e.GlobalID,
+					Time:     e.Time,
+					Type:     e.Type,
+					Data:     data,
+				})
+			case "FolderScanProgress":
+				var data FolderScanProgressEventData
+				err := json.Unmarshal(e.Data, &data)
+				if err != nil {
+					// TODO figure out how to handle this
+					continue
+				}
+
+				parsedEvents = append(parsedEvents, SyncthingEvent[any]{
+					ID:       e.ID,
+					GlobalID: e.GlobalID,
+					Time:     e.Time,
+					Type:     e.Type,
+					Data:     data,
+				})
+			case "StateChanged":
+				var data StateChangedEventData
+				err := json.Unmarshal(e.Data, &data)
+				if err != nil {
+					// TODO figure out how to handle this
+					continue
+				}
+
+				parsedEvents = append(parsedEvents, SyncthingEvent[any]{
+					ID:       e.ID,
+					GlobalID: e.GlobalID,
+					Time:     e.Time,
+					Type:     e.Type,
+					Data:     data,
+				})
+			case "FolderCompletion":
+				var data FolderCompletionEventData
+				er := json.Unmarshal(e.Data, &data)
+				if er != nil {
+					// TODO figure out how to handle this
+					err = er
+					continue
+				}
+
+				parsedEvents = append(parsedEvents, SyncthingEvent[any]{
+					ID:       e.ID,
+					GlobalID: e.GlobalID,
+					Time:     e.Time,
+					Type:     e.Type,
+					Data:     data,
+				})
+			default:
+				parsedEvents = append(parsedEvents, SyncthingEvent[any]{
+					ID:       e.ID,
+					GlobalID: e.GlobalID,
+					Time:     e.Time,
+					Type:     e.Type,
+					Data:     e.Data,
+				})
+			}
+		}
+
+		return FetchedEventsMsg{events: parsedEvents, since: since, err: err}
 	}
 }
 
-func fetchSystemStatus(foo HttpData) tea.Cmd {
+func fetchSystemStatus(httpData HttpData) tea.Cmd {
 	return func() tea.Msg {
 		var status SyncthingSystemStatus
-		err := fetchBytes("http://localhost:8384/rest/system/status", foo.apiKey, &status)
+		err := fetchBytes("http://localhost:8384/rest/system/status", httpData.apiKey, &status)
 		if err != nil {
 			return FetchedSystemStatusMsg{err: err}
 		}
@@ -249,10 +345,10 @@ func fetchSystemStatus(foo HttpData) tea.Cmd {
 	}
 }
 
-func fetchSystemVersion(foo HttpData) tea.Cmd {
+func fetchSystemVersion(httpData HttpData) tea.Cmd {
 	return func() tea.Msg {
 		var version SyncthingSystemVersion
-		err := fetchBytes("http://localhost:8384/rest/system/version", foo.apiKey, &version)
+		err := fetchBytes("http://localhost:8384/rest/system/version", httpData.apiKey, &version)
 		if err != nil {
 			return FetchedSystemVersionMsg{err: err}
 		}
@@ -309,42 +405,63 @@ func fetchDeviceStats(foo HttpData) tea.Cmd {
 	}
 }
 
-func fetchDeviceCompletion(foo HttpData, id string) tea.Cmd {
+func fetchCompletion(httpData HttpData, deviceID, folderID string) tea.Cmd {
 	return func() tea.Msg {
 		params := url.Values{}
-		params.Add("device", id)
-		fooUrl := foo.url.JoinPath(DB_COMPLETION_PATH)
-		fooUrl.RawQuery = params.Encode()
-		req, err := http.NewRequest(http.MethodGet, fooUrl.String(), nil)
+		params.Add("device", deviceID)
+		params.Add("folder", folderID)
+		url := httpData.url.JoinPath(DB_COMPLETION_PATH)
+		url.RawQuery = params.Encode()
+		req, err := http.NewRequest(http.MethodGet, url.String(), nil)
 		if err != nil {
-			return FetchedDeviceCompletion{err: err}
+			return FetchedCompletion{
+				deviceID: deviceID,
+				folderID: folderID,
+				err:      err,
+			}
 		}
 
-		req.Header.Set("X-API-Key", foo.apiKey)
-		resp, err := foo.client.Do(req)
+		req.Header.Set("X-API-Key", httpData.apiKey)
+		resp, err := httpData.client.Do(req)
 		if err != nil {
-			return FetchedDeviceCompletion{err: err}
+			return FetchedCompletion{
+				deviceID: deviceID,
+				folderID: folderID,
+				err:      err,
+			}
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode == http.StatusNotFound {
-			return FetchedDeviceCompletion{}
+			return FetchedCompletion{
+				deviceID: deviceID,
+				folderID: folderID,
+			}
 		}
 
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return FetchedDeviceCompletion{err: err}
+			return FetchedCompletion{
+				deviceID: deviceID,
+				folderID: folderID,
+				err:      err,
+			}
 		}
 
 		var deviceCompletion SyncStatusCompletion
 		err = json.Unmarshal(body, &deviceCompletion)
 		if err != nil {
 			err = fmt.Errorf("error unmarshalling JSON: %w", err)
-			return FetchedDeviceCompletion{err: err}
+			return FetchedCompletion{
+				deviceID: deviceID,
+				folderID: folderID,
+				err:      err,
+			}
 		}
 
-		return FetchedDeviceCompletion{
-			deviceID:      id,
+		return FetchedCompletion{
+			deviceID:      deviceID,
+			folderID:      folderID,
 			completion:    deviceCompletion,
 			hasCompletion: true,
 		}
@@ -488,63 +605,36 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		cmds := make([]tea.Cmd, 0)
 		for _, e := range msg.events {
-			if e.Type == "DeviceConnected" ||
-				e.Type == "DeviceDisconnected" ||
-				e.Type == "DeviceDiscovered" ||
-				e.Type == "DevicePaused" ||
-				e.Type == "DeviceResumed" {
-				for _, d := range m.config.Devices {
-					cmds = append(cmds, fetchDeviceCompletion(m.httpData, d.DeviceID))
+			switch data := e.Data.(type) {
+			case FolderSummaryEventData:
+				m.folderStatuses[data.Folder] = data.Summary
+			case Config:
+				m.config = data
+			case FolderScanProgressEventData:
+				m.scanProgress[data.Folder] = data
+			case StateChangedEventData:
+				if data.To == "scanning" {
+					delete(m.scanProgress, data.Folder)
 				}
-				break
-			}
-		}
-		for _, e := range msg.events {
-			if e.Type == "FolderSummary" {
-				var foo FolderSummaryEvent
-				err := json.Unmarshal(e.Data, &foo)
-				if err != nil {
-					// TODO figure out how to handle this
-					continue
-				}
-				m.folderStatuses[foo.Folder] = foo.Summary
-			}
-
-			if e.Type == "ConfigSaved" {
-				var foo Config
-				err := json.Unmarshal(e.Data, &foo)
-				if err != nil {
-					// TODO figure out how to handle this
-					continue
-				}
-				m.config = foo
-			}
-
-			if e.Type == "FolderScanProgress" {
-				var scanProgress FolderScanProgressEvent
-				err := json.Unmarshal(e.Data, &scanProgress)
-				if err != nil {
-					// TODO figure out how to handle this
-					continue
-				}
-
-				m.scanProgress[scanProgress.Folder] = scanProgress
-			}
-
-			if e.Type == "StateChanged" {
-				var stateChanged StateChangedEvent
-				err := json.Unmarshal(e.Data, &stateChanged)
-				if err != nil {
-					// TODO figure out how to handle this
-					continue
-				}
-
-				if stateChanged.To == "scanning" {
-					delete(m.scanProgress, stateChanged.Folder)
-				}
-				if stateChanged.From == "scanning" && stateChanged.To == "idle" {
+				if data.From == "scanning" && data.To == "idle" {
 					cmds = append(cmds, fetchFolderStats(m.httpData))
 				}
+			case FolderCompletionEventData:
+				if _, has := m.completion[data.Device]; !has {
+					m.completion[data.Device] = make(map[string]SyncStatusCompletion)
+				}
+				m.completion[data.Device][data.Folder] = SyncStatusCompletion{
+					Completion:  data.Completion,
+					GlobalBytes: data.GlobalBytes,
+					GlobalItems: data.GlobalItems,
+					NeedBytes:   data.NeedBytes,
+					NeedDeletes: data.NeedDeletes,
+					NeedItems:   data.NeedItems,
+					RemoteState: data.RemoteState,
+					Sequence:    data.Sequence,
+				}
+
+			default:
 			}
 		}
 		cmds = append(cmds, fetchEvents(m.httpData, since))
@@ -604,9 +694,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds := make([]tea.Cmd, 0)
 		for _, f := range msg.config.Folders {
 			cmds = append(cmds, fetchFolderStatus(m.httpData, f.ID))
-		}
-		for _, d := range msg.config.Devices {
-			cmds = append(cmds, fetchDeviceCompletion(m.httpData, d.DeviceID))
+
+			for _, d := range f.Devices {
+				cmds = append(cmds, fetchCompletion(m.httpData, d.DeviceID, f.ID))
+			}
 		}
 
 		return m, tea.Batch(cmds...)
@@ -626,17 +717,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.deviceStats = msg.deviceStats
 		return m, nil
-	case FetchedDeviceCompletion:
+	case FetchedCompletion:
 		if msg.err != nil {
 			// TODO create system status error ux
 			m.err = msg.err
 			return m, nil
 		}
 
+		if _, has := m.completion[msg.deviceID]; !has {
+			m.completion[msg.deviceID] = make(map[string]SyncStatusCompletion)
+		}
+
 		if msg.hasCompletion {
-			m.deviceCompletion[msg.deviceID] = msg.completion
+			m.completion[msg.deviceID][msg.folderID] = msg.completion
 		} else {
-			delete(m.deviceCompletion, msg.deviceID)
+			delete(m.completion[msg.deviceID], msg.folderID)
 		}
 
 		return m, nil
@@ -684,7 +779,7 @@ func (m model) View() string {
 	})
 
 	devices := lo.Map(m.config.Devices, func(device DeviceConfig, index int) GroupedDeviceData {
-		completion, hasCompletion := m.deviceCompletion[device.DeviceID]
+		completion, hasCompletion := m.completion[device.DeviceID]
 		stats, hasStats := m.deviceStats[device.DeviceID]
 		connection, hasConnection := m.connections.Connections[device.DeviceID]
 		prevConnection := m.prevConnections.Connections[device.DeviceID]
@@ -1037,15 +1132,16 @@ func viewDevice(device GroupedDeviceData, currentTime time.Time) string {
 		PaddingRight(1).
 		Width(50).
 		BorderForeground(color)
+	groupedCompletion := groupCompletion(lo.Values(device.completion)...)
 
 	containerInnerWidth := container.GetWidth() - container.GetHorizontalPadding()
 	var deviceStatusLabel string
-	if int(device.completion.Completion) != 100 && status == DeviceSyncing {
+	if groupedCompletion.Completion != 100 && status == DeviceSyncing {
 		deviceStatusLabel = fmt.Sprintf(
 			"%s (%d%%, %s)",
 			deviceLabel(status),
-			int(device.completion.Completion),
-			humanize.IBytes(uint64(device.completion.NeedBytes)))
+			groupedCompletion.Completion,
+			humanize.IBytes(uint64(groupedCompletion.NeedBytes)))
 	} else {
 		deviceStatusLabel = deviceLabel(status)
 	}
@@ -1104,7 +1200,7 @@ func viewDevice(device GroupedDeviceData, currentTime time.Time) string {
 				),
 			)
 		if status == DeviceSyncing {
-			table.Row("Out of Sync Items", fmt.Sprint(device.completion.NeedItems))
+			table.Row("Out of Sync Items", fmt.Sprint(groupedCompletion.NeedItems))
 		}
 	} else {
 		table.
@@ -1120,6 +1216,27 @@ func viewDevice(device GroupedDeviceData, currentTime time.Time) string {
 	content := table.Render()
 
 	return container.Render(lipgloss.JoinVertical(lipgloss.Left, header, content))
+}
+
+type GroupedCompletion struct {
+	TotalBytes  int64
+	NeedBytes   int64
+	NeedItems   int
+	NeedDeletes int
+	Completion  int
+}
+
+func groupCompletion(arg ...SyncStatusCompletion) GroupedCompletion {
+	foo := GroupedCompletion{}
+	for _, c := range arg {
+		foo.NeedBytes += c.NeedBytes
+		foo.NeedItems += c.NeedItems
+		foo.NeedDeletes += c.NeedDeletes
+		foo.TotalBytes += c.GlobalBytes
+	}
+	foo.Completion = int(math.Round(100 * (1.0 - float64(foo.NeedBytes)/float64(foo.TotalBytes))))
+
+	return foo
 }
 
 func osName(os string) string {
@@ -1266,13 +1383,14 @@ func deviceStatus(device GroupedDeviceData, currentTime time.Time) DeviceStatus 
 	}
 	if device.connection.Connected {
 		insync := lo.Ternary(isUnused, DeviceUnusedInSync, DeviceInSync)
+		groupedCompletion := groupCompletion(lo.Values(device.completion)...)
 		// when all folders are paused. completion doesnt have Completion value.
 		// We also check that there isnt any needs things to assert that device is in sync
-		needsSomething := device.completion.NeedBytes != 0 ||
-			device.completion.NeedItems != 0 ||
-			device.completion.NeedDeletes != 0
+		needsSomething := groupedCompletion.NeedBytes != 0 ||
+			groupedCompletion.NeedItems != 0 ||
+			groupedCompletion.NeedDeletes != 0
 		return lo.Ternary(
-			int(device.completion.Completion) == 100 || !needsSomething,
+			groupedCompletion.Completion == 100 || !needsSomething,
 			insync,
 			DeviceSyncing)
 	}
@@ -1442,13 +1560,13 @@ type GroupedFolderData struct {
 	hasStatus       bool
 	stats           FolderStats
 	hasStats        bool
-	scanProgress    FolderScanProgressEvent
+	scanProgress    FolderScanProgressEventData
 	hasScanProgress bool
 }
 
 type GroupedDeviceData struct {
 	config         DeviceConfig
-	completion     SyncStatusCompletion
+	completion     map[string]SyncStatusCompletion
 	hasCompletion  bool
 	stats          DeviceStats
 	hasStats       bool

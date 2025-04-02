@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"time"
 )
 
@@ -416,6 +415,7 @@ type DeviceStats struct {
 	LastConnectionDurationS float64   `json:"lastConnectionDurationS"`
 }
 
+// todo rename struct
 type SyncStatusCompletion struct {
 	Completion  float64 `json:"completion"`
 	GlobalBytes int64   `json:"globalBytes"`
@@ -429,29 +429,42 @@ type SyncStatusCompletion struct {
 
 // EVENTS PAYLOAD
 
-type SyncthingEvent struct {
-	ID       int             `json:"id"`
-	GlobalID int             `json:"globalID"`
-	Time     time.Time       `json:"time"`
-	Type     string          `json:"type"`
-	Data     json.RawMessage `json:"data"`
+type SyncthingEvent[DATA any] struct {
+	ID       int       `json:"id"`
+	GlobalID int       `json:"globalID"`
+	Time     time.Time `json:"time"`
+	Type     string    `json:"type"`
+	Data     DATA      `json:"data"`
 }
 
-type FolderSummaryEvent struct {
+type FolderSummaryEventData struct {
 	Folder  string                `json:"folder"`
 	Summary SyncthingFolderStatus `json:"summary"`
 }
 
-type FolderScanProgressEvent struct {
+type FolderScanProgressEventData struct {
 	Total   int64   `json:"total"`
 	Rate    float64 `json:"rate"`
 	Current int64   `json:"current"`
 	Folder  string  `json:"folder"`
 }
 
-type StateChangedEvent struct {
+type StateChangedEventData struct {
 	Folder   string  `json:"folder"`
 	From     string  `json:"from"`
 	Duration float64 `json:"duration"`
 	To       string  `json:"to"`
+}
+
+type FolderCompletionEventData struct {
+	Completion  float64 `json:"completion"`
+	Device      string  `json:"device"`
+	Folder      string  `json:"folder"`
+	GlobalBytes int64   `json:"globalBytes"`
+	GlobalItems int     `json:"globalItems"`
+	NeedBytes   int64   `json:"needBytes"`
+	NeedDeletes int     `json:"needDeletes"`
+	NeedItems   int     `json:"needItems"`
+	RemoteState string  `json:"remoteState"`
+	Sequence    int     `json:"sequence"`
 }
