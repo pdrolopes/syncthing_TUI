@@ -229,6 +229,12 @@ func fetchFolderStatus(foo HttpData, folderID string) tea.Cmd {
 	}
 }
 
+func wait(waitTime time.Duration, command tea.Cmd) tea.Cmd {
+	return tea.Tick(waitTime, func(time.Time) tea.Msg {
+		return command()
+	})
+}
+
 func fetchEvents(httpData HttpData, since int) tea.Cmd {
 	return func() tea.Msg {
 		params := url.Values{}
@@ -591,6 +597,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			// TODO figure out what to do if event errors
 			m.err = msg.err
+			return m, wait(10*time.Second, fetchEvents(m.httpData, msg.since))
 		}
 
 		since := 0
