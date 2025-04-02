@@ -46,6 +46,7 @@ type model struct {
 
 	// Syncthing DATA
 	config          Config
+	pendingDevices  map[string]PendingDevice
 	version         SyncthingSystemVersion
 	status          SyncthingSystemStatus
 	connections     SyncthingSystemConnections
@@ -56,6 +57,19 @@ type model struct {
 	folderStatuses  map[string]SyncthingFolderStatus
 	scanProgress    map[string]FolderScanProgressEventData
 }
+
+type PendingDevice struct {
+	Address  string
+	DeviceID string
+	Name     string
+	At       time.Time
+}
+
+type PendingDeviceList []PendingDevice
+
+func (list PendingDeviceList) Len() int           { return len(list) }
+func (list PendingDeviceList) Swap(i, j int)      { list[i], list[j] = list[j], list[i] }
+func (list PendingDeviceList) Less(i, j int) bool { return list[i].Name < list[j].Name }
 
 type HttpData struct {
 	// TODO think of a better name
@@ -75,8 +89,9 @@ const (
 	DEFAULT_SYNCTHING_URL         = "http://localhost:8384"
 
 	// Syncthing rest paths
-	DB_COMPLETION_PATH = "/rest/db/completion"
-	DB_SCAN            = "/rest/db/scan"
+	DB_COMPLETION_PATH      = "/rest/db/completion"
+	DB_SCAN                 = "/rest/db/scan"
+	CLUSTER_PENDING_DEVICES = "/rest/cluster/pending/devices"
 )
 
 var VERSION = "unknown"
@@ -127,6 +142,7 @@ func initModel() model {
 		expandedFields: make(map[string]struct{}),
 		completion:     make(map[string]map[string]SyncStatusCompletion),
 		scanProgress:   make(map[string]FolderScanProgressEventData),
+		pendingDevices: make(map[string]PendingDevice),
 	}
 }
 
@@ -141,6 +157,7 @@ func (m model) Init() tea.Cmd {
 		fetchDeviceStats(m.httpData),
 		fetchEvents(m.httpData, 0),
 		fetchFolderStats(m.httpData),
+		fetchPendingDevices(m.httpData),
 	)
 	return tea.Batch(
 		tea.Sequence(fetchSystemInfo, fetchOtherInfo),
@@ -212,304 +229,9 @@ type UserPostPutEndedMsg struct {
 	err    error
 }
 
-func fetchFolderStatus(foo HttpData, folderID string) tea.Cmd {
-	return func() tea.Msg {
-		params := url.Values{}
-		params.Add("folder", folderID)
-		var statusFolder SyncthingFolderStatus
-		err := fetchBytes(
-			"http://localhost:8384/rest/db/status?"+params.Encode(),
-			foo.apiKey,
-			&statusFolder)
-		if err != nil {
-			return FetchedFolderStatus{err: err}
-		}
-
-		return FetchedFolderStatus{folder: statusFolder, id: folderID}
-	}
-}
-
-func wait(waitTime time.Duration, command tea.Cmd) tea.Cmd {
-	return tea.Tick(waitTime, func(time.Time) tea.Msg {
-		return command()
-	})
-}
-
-func fetchEvents(httpData HttpData, since int) tea.Cmd {
-	return func() tea.Msg {
-		params := url.Values{}
-		params.Add("since", fmt.Sprint(since))
-		var events []SyncthingEvent[json.RawMessage]
-		err := fetchBytes("http://localhost:8384/rest/events?"+params.Encode(), httpData.apiKey, &events)
-		if err != nil {
-			return FetchedEventsMsg{err: err, since: since}
-		}
-
-		parsedEvents := make([]SyncthingEvent[any], 0, len(events))
-		for _, e := range events {
-			switch e.Type {
-			case "FolderSummary":
-				var data FolderSummaryEventData
-				err := json.Unmarshal(e.Data, &data)
-				if err != nil {
-					// TODO figure out how to handle this
-					continue
-				}
-
-				parsedEvents = append(parsedEvents, SyncthingEvent[any]{
-					ID:       e.ID,
-					GlobalID: e.GlobalID,
-					Time:     e.Time,
-					Type:     e.Type,
-					Data:     data,
-				})
-			case "ConfigSaved":
-				var data Config
-				err := json.Unmarshal(e.Data, &data)
-				if err != nil {
-					// TODO figure out how to handle this
-					continue
-				}
-
-				parsedEvents = append(parsedEvents, SyncthingEvent[any]{
-					ID:       e.ID,
-					GlobalID: e.GlobalID,
-					Time:     e.Time,
-					Type:     e.Type,
-					Data:     data,
-				})
-			case "FolderScanProgress":
-				var data FolderScanProgressEventData
-				err := json.Unmarshal(e.Data, &data)
-				if err != nil {
-					// TODO figure out how to handle this
-					continue
-				}
-
-				parsedEvents = append(parsedEvents, SyncthingEvent[any]{
-					ID:       e.ID,
-					GlobalID: e.GlobalID,
-					Time:     e.Time,
-					Type:     e.Type,
-					Data:     data,
-				})
-			case "StateChanged":
-				var data StateChangedEventData
-				err := json.Unmarshal(e.Data, &data)
-				if err != nil {
-					// TODO figure out how to handle this
-					continue
-				}
-
-				parsedEvents = append(parsedEvents, SyncthingEvent[any]{
-					ID:       e.ID,
-					GlobalID: e.GlobalID,
-					Time:     e.Time,
-					Type:     e.Type,
-					Data:     data,
-				})
-			case "FolderCompletion":
-				var data FolderCompletionEventData
-				er := json.Unmarshal(e.Data, &data)
-				if er != nil {
-					// TODO figure out how to handle this
-					err = er
-					continue
-				}
-
-				parsedEvents = append(parsedEvents, SyncthingEvent[any]{
-					ID:       e.ID,
-					GlobalID: e.GlobalID,
-					Time:     e.Time,
-					Type:     e.Type,
-					Data:     data,
-				})
-			default:
-				parsedEvents = append(parsedEvents, SyncthingEvent[any]{
-					ID:       e.ID,
-					GlobalID: e.GlobalID,
-					Time:     e.Time,
-					Type:     e.Type,
-					Data:     e.Data,
-				})
-			}
-		}
-
-		return FetchedEventsMsg{events: parsedEvents, since: since, err: err}
-	}
-}
-
-func fetchSystemStatus(httpData HttpData) tea.Cmd {
-	return func() tea.Msg {
-		var status SyncthingSystemStatus
-		err := fetchBytes("http://localhost:8384/rest/system/status", httpData.apiKey, &status)
-		if err != nil {
-			return FetchedSystemStatusMsg{err: err}
-		}
-
-		return FetchedSystemStatusMsg{status: status}
-	}
-}
-
-func fetchSystemVersion(httpData HttpData) tea.Cmd {
-	return func() tea.Msg {
-		var version SyncthingSystemVersion
-		err := fetchBytes("http://localhost:8384/rest/system/version", httpData.apiKey, &version)
-		if err != nil {
-			return FetchedSystemVersionMsg{err: err}
-		}
-
-		return FetchedSystemVersionMsg{version: version}
-	}
-}
-
-func fetchSystemConnections(foo HttpData) tea.Cmd {
-	return func() tea.Msg {
-		var connections SyncthingSystemConnections
-		err := fetchBytes("http://localhost:8384/rest/system/connections", foo.apiKey, &connections)
-		if err != nil {
-			return FetchedSystemConnectionsMsg{err: err}
-		}
-
-		return FetchedSystemConnectionsMsg{connections: connections}
-	}
-}
-
-func fetchConfig(foo HttpData) tea.Cmd {
-	return func() tea.Msg {
-		var config Config
-		err := fetchBytes("http://localhost:8384/rest/config", foo.apiKey, &config)
-		if err != nil {
-			return FetchedConfig{err: err}
-		}
-
-		return FetchedConfig{config: config}
-	}
-}
-
-func fetchFolderStats(foo HttpData) tea.Cmd {
-	return func() tea.Msg {
-		var folderStats map[string]FolderStats
-		err := fetchBytes("http://localhost:8384/rest/stats/folder", foo.apiKey, &folderStats)
-		if err != nil {
-			return FetchedFolderStats{err: err}
-		}
-
-		return FetchedFolderStats{folderStats: folderStats}
-	}
-}
-
-func fetchDeviceStats(foo HttpData) tea.Cmd {
-	return func() tea.Msg {
-		var deviceStats map[string]DeviceStats
-		err := fetchBytes("http://localhost:8384/rest/stats/device", foo.apiKey, &deviceStats)
-		if err != nil {
-			return FetchedDeviceStats{err: err}
-		}
-
-		return FetchedDeviceStats{deviceStats: deviceStats}
-	}
-}
-
-func fetchCompletion(httpData HttpData, deviceID, folderID string) tea.Cmd {
-	return func() tea.Msg {
-		params := url.Values{}
-		params.Add("device", deviceID)
-		params.Add("folder", folderID)
-		url := httpData.url.JoinPath(DB_COMPLETION_PATH)
-		url.RawQuery = params.Encode()
-		req, err := http.NewRequest(http.MethodGet, url.String(), nil)
-		if err != nil {
-			return FetchedCompletion{
-				deviceID: deviceID,
-				folderID: folderID,
-				err:      err,
-			}
-		}
-
-		req.Header.Set("X-API-Key", httpData.apiKey)
-		resp, err := httpData.client.Do(req)
-		if err != nil {
-			return FetchedCompletion{
-				deviceID: deviceID,
-				folderID: folderID,
-				err:      err,
-			}
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode == http.StatusNotFound {
-			return FetchedCompletion{
-				deviceID: deviceID,
-				folderID: folderID,
-			}
-		}
-
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return FetchedCompletion{
-				deviceID: deviceID,
-				folderID: folderID,
-				err:      err,
-			}
-		}
-
-		var deviceCompletion SyncStatusCompletion
-		err = json.Unmarshal(body, &deviceCompletion)
-		if err != nil {
-			err = fmt.Errorf("error unmarshalling JSON: %w", err)
-			return FetchedCompletion{
-				deviceID: deviceID,
-				folderID: folderID,
-				err:      err,
-			}
-		}
-
-		return FetchedCompletion{
-			deviceID:      deviceID,
-			folderID:      folderID,
-			completion:    deviceCompletion,
-			hasCompletion: true,
-		}
-	}
-}
-
-func postScan(foo HttpData, folderId string) tea.Cmd {
-	return func() tea.Msg {
-		params := url.Values{}
-		params.Add("folder", folderId)
-		url := foo.url.JoinPath(DB_SCAN)
-		url.RawQuery = params.Encode()
-		req, err := http.NewRequest(http.MethodPost, url.String(), nil)
-		if err != nil {
-			return nil
-		}
-
-		req.Header.Set("X-API-Key", foo.apiKey)
-		resp, err := foo.client.Do(req)
-		if err != nil {
-			return nil
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode == http.StatusNotFound {
-			return nil
-		}
-
-		return nil
-	}
-}
-
-func putFolder(foo HttpData, folders ...SyncthingFolderConfig) tea.Cmd {
-	return func() tea.Msg {
-		err := put("http://localhost:8384/rest/config/folders/", foo.apiKey, folders)
-		ids := strings.Join(lo.Map(folders, func(item SyncthingFolderConfig, index int) string { return item.ID }), ", ")
-		return UserPostPutEndedMsg{err: err, action: "putFolder: " + ids}
-	}
-}
-
-func currentTimeCmd() tea.Cmd {
-	return tea.Every(REFETCH_CURRENT_TIME_INTERVAL, func(currentTime time.Time) tea.Msg { return TickedCurrentTimeMsg{currentTime: currentTime} })
+type FetchedPendingDevices struct {
+	err     error
+	devices map[string]PendingDeviceInfo
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -587,6 +309,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
+		for pendingDeviceID := range m.pendingDevices {
+			if zone.Get(pendingDeviceID + "/dismiss").InBounds(msg) {
+				return m, deletePendingDevice(m.httpData, pendingDeviceID)
+			}
+		}
 
 		return m, nil
 	case tea.WindowSizeMsg:
@@ -639,6 +366,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					NeedItems:   data.NeedItems,
 					RemoteState: data.RemoteState,
 					Sequence:    data.Sequence,
+				}
+			case PendingDevicesChangedEventData:
+				for _, added := range data.Added {
+					m.pendingDevices[added.DeviceID] = PendingDevice{
+						DeviceID: added.DeviceID,
+						Name:     added.Name,
+						Address:  added.Address,
+						At:       e.Time,
+					}
+				}
+				for _, removed := range data.Removed {
+					delete(m.pendingDevices, removed.DeviceID)
 				}
 
 			default:
@@ -742,6 +481,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		return m, nil
+	case FetchedPendingDevices:
+		if msg.err != nil {
+			// TODO
+			panic(msg.err)
+		}
+
+		for deviceID, info := range msg.devices {
+			m.pendingDevices[deviceID] = PendingDevice{
+				DeviceID: deviceID,
+				Name:     info.Name,
+				At:       info.Time,
+				Address:  info.Address,
+			}
+		}
+
+		return m, nil
+
 	case TickedCurrentTimeMsg:
 		m.currentTime = msg.currentTime
 		return m, currentTimeCmd()
@@ -757,18 +513,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // ------------------ VIEW --------------------------
 
 func (m model) View() string {
-	if m.err != nil {
-		return m.err.Error()
-	}
-
 	if m.httpData.apiKey == "" {
 		return "Missing api key to acess syncthing. Env: SYNCTHING_API_KEY"
 	}
 
-	// if m.loading {
-	// 	str := fmt.Sprintf("\n\n   %s Loading syncthing data... %s\n\n", m.spinner.View(), quitKeys.Help().Desc)
-	// 	return str
-	// }
+	if m.err != nil {
+		return m.err.Error()
+	}
 
 	folders := lo.Map(m.config.Folders, func(folder SyncthingFolderConfig, index int) GroupedFolderData {
 		status, hasStatus := m.folderStatuses[folder.ID]
@@ -811,21 +562,75 @@ func (m model) View() string {
 	})
 
 	return zone.Scan(lipgloss.NewStyle().MaxHeight(m.height).Render(
-		lipgloss.JoinHorizontal(lipgloss.Top,
-			viewFolders(folders, m.config.Devices, m.status.MyID, m.expandedFields),
-			lipgloss.JoinVertical(lipgloss.Left,
-				viewStatus(
-					m.status,
-					m.connections,
-					m.prevConnections,
-					lo.Values(m.folderStatuses),
-					m.version,
-					thisDeviceName(m.status.MyID, m.config.Devices),
-					m.config.Options,
-				),
+		lipgloss.JoinVertical(lipgloss.Center,
+			viewPendingDevices(lo.Values(m.pendingDevices)),
+			lipgloss.JoinHorizontal(lipgloss.Top,
+				viewFolders(folders, m.config.Devices, m.status.MyID, m.expandedFields),
+				lipgloss.JoinVertical(lipgloss.Left,
+					viewStatus(
+						m.status,
+						m.connections,
+						m.prevConnections,
+						lo.Values(m.folderStatuses),
+						m.version,
+						thisDeviceName(m.status.MyID, m.config.Devices),
+						m.config.Options,
+					),
 
-				viewDevices(devices, m.currentTime),
-			))))
+					viewDevices(devices, m.currentTime),
+				)))))
+}
+
+func viewPendingDevices(pendingDevices []PendingDevice) string {
+	if len(pendingDevices) == 0 {
+		return ""
+	}
+	const width = 80
+	container := lipgloss.
+		NewStyle().
+		Border(lipgloss.RoundedBorder(), true).
+		Padding(0, 1)
+
+	headerStyle := lipgloss.
+		NewStyle().
+		Width(container.GetWidth() - container.GetHorizontalPadding()).
+		Background(warningColor).
+		Foreground(lipgloss.Color("#ffffff"))
+
+	descriptionStyle := lipgloss.
+		NewStyle().
+		Width(width - 2)
+	views := make([]string, 0, len(pendingDevices))
+	for _, p := range pendingDevices {
+		header := headerStyle.Render(spaceAroundTable().Width(width-headerStyle.GetHorizontalPadding()).Row(
+			"New Device",
+			p.At.String(),
+		).Render())
+
+		description := fmt.Sprintf("Device \"%s\" (%s at %s) wants to connect. Add new device?",
+			(p.Name),
+			(p.DeviceID),
+			p.Address,
+		)
+		btns := lipgloss.JoinHorizontal(lipgloss.Top,
+			positiveBtn.Render("Add Device"),
+			" ",
+			negativeBtn.Render("Ignore"),
+			" ",
+			zone.Mark(p.DeviceID+"/dismiss", btnStyleV2.Render("Dismiss")),
+		)
+
+		views = append(views, container.Render(lipgloss.JoinVertical(lipgloss.Left,
+			header,
+			"",
+			descriptionStyle.Render(description),
+			"",
+			lipgloss.PlaceHorizontal(width, lipgloss.Right, btns),
+		)))
+		views = append(views, "")
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, views...)
 }
 
 func viewStatus(
@@ -916,6 +721,20 @@ func viewStatus(
 		),
 	)
 }
+
+var btnStyleV2 = lipgloss.
+	NewStyle().
+	Transform(func(text string) string { return fmt.Sprintf("[ %s ]", text) })
+
+var positiveBtn = btnStyleV2.
+	Background(successColor).
+	Foreground(lipgloss.Color("#ffffff"))
+
+var negativeBtn = btnStyleV2.
+	Background(lipgloss.AdaptiveColor{Light: "#ff7092", Dark: "#ff7092"}).
+	Foreground(lipgloss.Color("#ffffff"))
+
+// var neutralBtn = btnStyleV2
 
 var btnStyle = lipgloss.
 	NewStyle().
@@ -1442,7 +1261,7 @@ var (
 	// secondaryColor = lipgloss.AdaptiveColor{Light: "#4a4a4a", Dark: "#d0d0d0"}
 	accentColor  = lipgloss.AdaptiveColor{Light: "#005f87", Dark: "#00afd7"}
 	successColor = lipgloss.AdaptiveColor{Light: "#008700", Dark: "#00d700"}
-	// warningColor   = lipgloss.AdaptiveColor{Light: "#af8700", Dark: "#ffd700"}
+	warningColor = lipgloss.AdaptiveColor{Light: "#af8700", Dark: "#ffd700"}
 	// errorColor     = lipgloss.AdaptiveColor{Light: "#d70000", Dark: "#ff0000"}
 	// highlightColor = lipgloss.AdaptiveColor{Light: "#ffd700", Dark: "#ffaf00"}
 	// mutedColor     = lipgloss.AdaptiveColor{Light: "#6c757d", Dark: "#adb5bd"}

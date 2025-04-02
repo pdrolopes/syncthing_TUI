@@ -427,6 +427,12 @@ type SyncStatusCompletion struct {
 	Sequence    int     `json:"sequence"`
 }
 
+type PendingDeviceInfo struct {
+	Time    time.Time `json:"time"`
+	Name    string    `json:"name"`
+	Address string    `json:"address"`
+}
+
 // EVENTS PAYLOAD
 
 type SyncthingEvent[DATA any] struct {
@@ -467,4 +473,15 @@ type FolderCompletionEventData struct {
 	NeedItems   int     `json:"needItems"`
 	RemoteState string  `json:"remoteState"`
 	Sequence    int     `json:"sequence"`
+}
+
+type PendingDevicesChangedEventData struct {
+	Added   []DeviceChanged `json:"added"`
+	Removed []DeviceChanged `json:"removed"`
+}
+
+type DeviceChanged struct {
+	Address  string `json:"address,omitempty"`
+	DeviceID string `json:"deviceID"`
+	Name     string `json:"name,omitempty"`
 }
