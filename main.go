@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -561,9 +562,12 @@ func (m model) View() string {
 		}
 	})
 
+	pendingDevices := lo.Values(m.pendingDevices)
+	sort.Sort(PendingDeviceList(pendingDevices))
+
 	return zone.Scan(lipgloss.NewStyle().MaxHeight(m.height).Render(
 		lipgloss.JoinVertical(lipgloss.Center,
-			viewPendingDevices(lo.Values(m.pendingDevices)),
+			viewPendingDevices(pendingDevices),
 			lipgloss.JoinHorizontal(lipgloss.Top,
 				viewFolders(folders, m.config.Devices, m.status.MyID, m.expandedFields),
 				lipgloss.JoinVertical(lipgloss.Left,
