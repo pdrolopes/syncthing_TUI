@@ -237,13 +237,21 @@ type FolderStats struct {
 }
 
 type Config struct {
-	Version  int                     `json:"version"`
-	Folders  []SyncthingFolderConfig `json:"folders"`
-	Devices  []DeviceConfig          `json:"devices"`
-	GUI      GUI                     `json:"gui"`
-	LDAP     LDAP                    `json:"ldap"`
-	Options  Options                 `json:"options"`
-	Defaults Defaults                `json:"defaults"`
+	Version              int                     `json:"version"`
+	Folders              []SyncthingFolderConfig `json:"folders"`
+	Devices              []DeviceConfig          `json:"devices"`
+	GUI                  GUI                     `json:"gui"`
+	LDAP                 LDAP                    `json:"ldap"`
+	Options              Options                 `json:"options"`
+	Defaults             Defaults                `json:"defaults"`
+	RemoteIgnoredDevices []RemoteIgnoredDevice   `json:"remoteIgnoredDevices"`
+}
+
+type RemoteIgnoredDevice struct {
+	Address  string    `json:"address"`
+	DeviceID string    `json:"deviceID"`
+	Name     string    `json:"name"`
+	Time     time.Time `json:"time"`
 }
 
 type GUI struct {

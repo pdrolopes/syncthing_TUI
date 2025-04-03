@@ -82,7 +82,7 @@ type HttpData struct {
 // ------------------ constants -----------------------
 const (
 	REFETCH_STATUS_INTERVAL       = 10 * time.Second
-	REFETCH_CURRENT_TIME_INTERVAL = 1 * time.Minute
+	REFETCH_CURRENT_TIME_INTERVAL = time.Second
 	PAUSE_ALL_MARK                = "pause-all"
 	RESUME_ALL_MARK               = "resume-all"
 	RESCAN_ALL_MARK               = "rescan-all"
@@ -90,9 +90,11 @@ const (
 	DEFAULT_SYNCTHING_URL         = "http://localhost:8384"
 
 	// Syncthing rest paths
+	CONFIG                  = "/rest/config"
 	DB_COMPLETION_PATH      = "/rest/db/completion"
 	DB_SCAN                 = "/rest/db/scan"
 	CLUSTER_PENDING_DEVICES = "/rest/cluster/pending/devices"
+	CLUSTER_PENDING_FOLDERS = "/rest/cluster/pending/folders"
 )
 
 var VERSION = "unknown"
@@ -144,24 +146,20 @@ func initModel() model {
 		completion:     make(map[string]map[string]SyncStatusCompletion),
 		scanProgress:   make(map[string]FolderScanProgressEventData),
 		pendingDevices: make(map[string]PendingDevice),
+		currentTime:    time.Now(),
 	}
 }
 
 func (m model) Init() tea.Cmd {
-	fetchSystemInfo := tea.Batch(
+	return tea.Batch(
 		fetchSystemConnections(m.httpData),
 		fetchSystemStatus(m.httpData),
 		fetchSystemVersion(m.httpData),
-	)
-	fetchOtherInfo := tea.Batch(
 		fetchConfig(m.httpData),
 		fetchDeviceStats(m.httpData),
 		fetchEvents(m.httpData, 0),
 		fetchFolderStats(m.httpData),
 		fetchPendingDevices(m.httpData),
-	)
-	return tea.Batch(
-		tea.Sequence(fetchSystemInfo, fetchOtherInfo),
 		tea.SetWindowTitle("tui-syncthing"),
 		currentTimeCmd(),
 		tea.Tick(REFETCH_STATUS_INTERVAL, func(time.Time) tea.Msg { return TickedRefetchStatusMsg{} }),
@@ -313,6 +311,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for pendingDeviceID := range m.pendingDevices {
 			if zone.Get(pendingDeviceID + "/dismiss").InBounds(msg) {
 				return m, deletePendingDevice(m.httpData, pendingDeviceID)
+			}
+
+			if zone.Get(pendingDeviceID + "/ignore").InBounds(msg) {
+
+				m.config.RemoteIgnoredDevices = append(m.config.RemoteIgnoredDevices, RemoteIgnoredDevice{
+					DeviceID: pendingDeviceID,
+					Name:     m.pendingDevices[pendingDeviceID].Name,
+					Address:  m.pendingDevices[pendingDeviceID].Address,
+					Time:     m.currentTime,
+				})
+				return m, putConfig(m.httpData, m.config)
 			}
 		}
 
@@ -567,6 +576,7 @@ func (m model) View() string {
 
 	return zone.Scan(lipgloss.NewStyle().MaxHeight(m.height).Render(
 		lipgloss.JoinVertical(lipgloss.Center,
+			m.currentTime.String(),
 			viewPendingDevices(pendingDevices),
 			lipgloss.JoinHorizontal(lipgloss.Top,
 				viewFolders(folders, m.config.Devices, m.status.MyID, m.expandedFields),
@@ -597,8 +607,9 @@ func viewPendingDevices(pendingDevices []PendingDevice) string {
 
 	headerStyle := lipgloss.
 		NewStyle().
-		Width(container.GetWidth() - container.GetHorizontalPadding()).
+		Width(container.GetWidth()-container.GetHorizontalPadding()).
 		Background(warningColor).
+		Padding(0, 1).
 		Foreground(lipgloss.Color("#ffffff"))
 
 	descriptionStyle := lipgloss.
@@ -617,9 +628,9 @@ func viewPendingDevices(pendingDevices []PendingDevice) string {
 			p.Address,
 		)
 		btns := lipgloss.JoinHorizontal(lipgloss.Top,
-			positiveBtn.Render("Add Device"),
+			zone.Mark(p.DeviceID+"/add-device", positiveBtn.Render("Add Device")),
 			" ",
-			negativeBtn.Render("Ignore"),
+			zone.Mark(p.DeviceID+"/ignore", negativeBtn.Render("Ignore")),
 			" ",
 			zone.Mark(p.DeviceID+"/dismiss", btnStyleV2.Render("Dismiss")),
 		)

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -322,6 +323,31 @@ func putFolder(foo HttpData, folders ...SyncthingFolderConfig) tea.Cmd {
 		err := put("http://localhost:8384/rest/config/folders/", foo.apiKey, folders)
 		ids := strings.Join(lo.Map(folders, func(item SyncthingFolderConfig, index int) string { return item.ID }), ", ")
 		return UserPostPutEndedMsg{err: err, action: "putFolder: " + ids}
+	}
+}
+
+func putConfig(httpData HttpData, config Config) tea.Cmd {
+	return func() tea.Msg {
+		jsonData, err := json.Marshal(config)
+		if err != nil {
+			return fmt.Errorf("error marshalling JSON: %w", err)
+		}
+
+		url := httpData.url.JoinPath(CONFIG)
+		req, err := http.NewRequest(http.MethodPut, url.String(), bytes.NewBuffer(jsonData))
+		if err != nil {
+			return err
+		}
+
+		req.Header.Set("X-API-Key", httpData.apiKey)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := httpData.client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		return nil
 	}
 }
 
