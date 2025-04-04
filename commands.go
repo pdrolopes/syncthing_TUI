@@ -11,6 +11,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	st "github.com/pdrolopes/syncthing_TUI/syncthing"
 	"github.com/samber/lo"
 )
 
@@ -18,7 +19,7 @@ func fetchFolderStatus(foo HttpData, folderID string) tea.Cmd {
 	return func() tea.Msg {
 		params := url.Values{}
 		params.Add("folder", folderID)
-		var statusFolder SyncthingFolderStatus
+		var statusFolder st.FolderStatus
 		err := fetchBytes(
 			"http://localhost:8384/rest/db/status?"+params.Encode(),
 			foo.apiKey,
@@ -41,24 +42,24 @@ func fetchEvents(httpData HttpData, since int) tea.Cmd {
 	return func() tea.Msg {
 		params := url.Values{}
 		params.Add("since", fmt.Sprint(since))
-		var events []SyncthingEvent[json.RawMessage]
+		var events []st.Event[json.RawMessage]
 		err := fetchBytes("http://localhost:8384/rest/events?"+params.Encode(), httpData.apiKey, &events)
 		if err != nil {
 			return FetchedEventsMsg{err: err, since: since}
 		}
 
-		parsedEvents := make([]SyncthingEvent[any], 0, len(events))
+		parsedEvents := make([]st.Event[any], 0, len(events))
 		for _, e := range events {
 			switch e.Type {
 			case "FolderSummary":
-				var data FolderSummaryEventData
+				var data st.FolderSummaryEventData
 				err := json.Unmarshal(e.Data, &data)
 				if err != nil {
 					// TODO figure out how to handle this
 					continue
 				}
 
-				parsedEvents = append(parsedEvents, SyncthingEvent[any]{
+				parsedEvents = append(parsedEvents, st.Event[any]{
 					ID:       e.ID,
 					GlobalID: e.GlobalID,
 					Time:     e.Time,
@@ -66,14 +67,14 @@ func fetchEvents(httpData HttpData, since int) tea.Cmd {
 					Data:     data,
 				})
 			case "ConfigSaved":
-				var data Config
+				var data st.Config
 				err := json.Unmarshal(e.Data, &data)
 				if err != nil {
 					// TODO figure out how to handle this
 					continue
 				}
 
-				parsedEvents = append(parsedEvents, SyncthingEvent[any]{
+				parsedEvents = append(parsedEvents, st.Event[any]{
 					ID:       e.ID,
 					GlobalID: e.GlobalID,
 					Time:     e.Time,
@@ -81,14 +82,14 @@ func fetchEvents(httpData HttpData, since int) tea.Cmd {
 					Data:     data,
 				})
 			case "FolderScanProgress":
-				var data FolderScanProgressEventData
+				var data st.FolderScanProgressEventData
 				err := json.Unmarshal(e.Data, &data)
 				if err != nil {
 					// TODO figure out how to handle this
 					continue
 				}
 
-				parsedEvents = append(parsedEvents, SyncthingEvent[any]{
+				parsedEvents = append(parsedEvents, st.Event[any]{
 					ID:       e.ID,
 					GlobalID: e.GlobalID,
 					Time:     e.Time,
@@ -96,14 +97,14 @@ func fetchEvents(httpData HttpData, since int) tea.Cmd {
 					Data:     data,
 				})
 			case "StateChanged":
-				var data StateChangedEventData
+				var data st.StateChangedEventData
 				err := json.Unmarshal(e.Data, &data)
 				if err != nil {
 					// TODO figure out how to handle this
 					continue
 				}
 
-				parsedEvents = append(parsedEvents, SyncthingEvent[any]{
+				parsedEvents = append(parsedEvents, st.Event[any]{
 					ID:       e.ID,
 					GlobalID: e.GlobalID,
 					Time:     e.Time,
@@ -111,7 +112,7 @@ func fetchEvents(httpData HttpData, since int) tea.Cmd {
 					Data:     data,
 				})
 			case "FolderCompletion":
-				var data FolderCompletionEventData
+				var data st.FolderCompletionEventData
 				er := json.Unmarshal(e.Data, &data)
 				if er != nil {
 					// TODO figure out how to handle this
@@ -119,7 +120,7 @@ func fetchEvents(httpData HttpData, since int) tea.Cmd {
 					continue
 				}
 
-				parsedEvents = append(parsedEvents, SyncthingEvent[any]{
+				parsedEvents = append(parsedEvents, st.Event[any]{
 					ID:       e.ID,
 					GlobalID: e.GlobalID,
 					Time:     e.Time,
@@ -127,7 +128,7 @@ func fetchEvents(httpData HttpData, since int) tea.Cmd {
 					Data:     data,
 				})
 			case "PendingDevicesChanged":
-				var data PendingDevicesChangedEventData
+				var data st.PendingDevicesChangedEventData
 				er := json.Unmarshal(e.Data, &data)
 				if er != nil {
 					// TODO figure out how to handle this
@@ -135,7 +136,7 @@ func fetchEvents(httpData HttpData, since int) tea.Cmd {
 					continue
 				}
 
-				parsedEvents = append(parsedEvents, SyncthingEvent[any]{
+				parsedEvents = append(parsedEvents, st.Event[any]{
 					ID:       e.ID,
 					GlobalID: e.GlobalID,
 					Time:     e.Time,
@@ -143,7 +144,7 @@ func fetchEvents(httpData HttpData, since int) tea.Cmd {
 					Data:     data,
 				})
 			default:
-				parsedEvents = append(parsedEvents, SyncthingEvent[any]{
+				parsedEvents = append(parsedEvents, st.Event[any]{
 					ID:       e.ID,
 					GlobalID: e.GlobalID,
 					Time:     e.Time,
@@ -159,7 +160,7 @@ func fetchEvents(httpData HttpData, since int) tea.Cmd {
 
 func fetchSystemStatus(httpData HttpData) tea.Cmd {
 	return func() tea.Msg {
-		var status SyncthingSystemStatus
+		var status st.SystemStatus
 		err := fetchBytes("http://localhost:8384/rest/system/status", httpData.apiKey, &status)
 		if err != nil {
 			return FetchedSystemStatusMsg{err: err}
@@ -171,7 +172,7 @@ func fetchSystemStatus(httpData HttpData) tea.Cmd {
 
 func fetchSystemVersion(httpData HttpData) tea.Cmd {
 	return func() tea.Msg {
-		var version SyncthingSystemVersion
+		var version st.SystemVersion
 		err := fetchBytes("http://localhost:8384/rest/system/version", httpData.apiKey, &version)
 		if err != nil {
 			return FetchedSystemVersionMsg{err: err}
@@ -183,7 +184,7 @@ func fetchSystemVersion(httpData HttpData) tea.Cmd {
 
 func fetchSystemConnections(foo HttpData) tea.Cmd {
 	return func() tea.Msg {
-		var connections SyncthingSystemConnections
+		var connections st.SystemConnection
 		err := fetchBytes("http://localhost:8384/rest/system/connections", foo.apiKey, &connections)
 		if err != nil {
 			return FetchedSystemConnectionsMsg{err: err}
@@ -195,7 +196,7 @@ func fetchSystemConnections(foo HttpData) tea.Cmd {
 
 func fetchConfig(foo HttpData) tea.Cmd {
 	return func() tea.Msg {
-		var config Config
+		var config st.Config
 		err := fetchBytes("http://localhost:8384/rest/config", foo.apiKey, &config)
 		if err != nil {
 			return FetchedConfig{err: err}
@@ -207,7 +208,7 @@ func fetchConfig(foo HttpData) tea.Cmd {
 
 func fetchFolderStats(foo HttpData) tea.Cmd {
 	return func() tea.Msg {
-		var folderStats map[string]FolderStats
+		var folderStats map[string]st.FolderStats
 		err := fetchBytes("http://localhost:8384/rest/stats/folder", foo.apiKey, &folderStats)
 		if err != nil {
 			return FetchedFolderStats{err: err}
@@ -219,7 +220,7 @@ func fetchFolderStats(foo HttpData) tea.Cmd {
 
 func fetchDeviceStats(foo HttpData) tea.Cmd {
 	return func() tea.Msg {
-		var deviceStats map[string]DeviceStats
+		var deviceStats map[string]st.DeviceStats
 		err := fetchBytes("http://localhost:8384/rest/stats/device", foo.apiKey, &deviceStats)
 		if err != nil {
 			return FetchedDeviceStats{err: err}
@@ -272,7 +273,7 @@ func fetchCompletion(httpData HttpData, deviceID, folderID string) tea.Cmd {
 			}
 		}
 
-		var deviceCompletion SyncStatusCompletion
+		var deviceCompletion st.StatusCompletion
 		err = json.Unmarshal(body, &deviceCompletion)
 		if err != nil {
 			err = fmt.Errorf("error unmarshalling JSON: %w", err)
@@ -318,15 +319,15 @@ func postScan(foo HttpData, folderId string) tea.Cmd {
 	}
 }
 
-func putFolder(foo HttpData, folders ...SyncthingFolderConfig) tea.Cmd {
+func putFolder(foo HttpData, folders ...st.FolderConfig) tea.Cmd {
 	return func() tea.Msg {
 		err := put("http://localhost:8384/rest/config/folders/", foo.apiKey, folders)
-		ids := strings.Join(lo.Map(folders, func(item SyncthingFolderConfig, index int) string { return item.ID }), ", ")
+		ids := strings.Join(lo.Map(folders, func(item st.FolderConfig, index int) string { return item.ID }), ", ")
 		return UserPostPutEndedMsg{err: err, action: "putFolder: " + ids}
 	}
 }
 
-func putConfig(httpData HttpData, config Config) tea.Cmd {
+func putConfig(httpData HttpData, config st.Config) tea.Cmd {
 	return func() tea.Msg {
 		jsonData, err := json.Marshal(config)
 		if err != nil {
@@ -377,7 +378,7 @@ func fetchPendingDevices(httpData HttpData) tea.Cmd {
 			}
 		}
 
-		var pendingDevices map[string]PendingDeviceInfo
+		var pendingDevices map[string]st.PendingDeviceInfo
 		err = json.Unmarshal(body, &pendingDevices)
 		if err != nil {
 			err = fmt.Errorf("error unmarshalling JSON: %w", err)

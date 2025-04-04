@@ -21,6 +21,8 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	"github.com/dustin/go-humanize"
 	zone "github.com/lrstanley/bubblezone"
+	adddevice "github.com/pdrolopes/syncthing_TUI/adddevice"
+	"github.com/pdrolopes/syncthing_TUI/syncthing"
 	"github.com/samber/lo"
 )
 
@@ -41,22 +43,23 @@ type model struct {
 	expandedFields    map[string]struct{}
 	ongoingUserAction bool
 	currentTime       time.Time
+	addDeviceModal    adddevice.AddDeviceModel
 
 	// http data
 	httpData HttpData
 
 	// Syncthing DATA
-	config          Config
+	config          syncthing.Config
 	pendingDevices  map[string]PendingDevice
-	version         SyncthingSystemVersion
-	status          SyncthingSystemStatus
-	connections     SyncthingSystemConnections
-	prevConnections SyncthingSystemConnections
-	folderStats     map[string]FolderStats
-	deviceStats     map[string]DeviceStats
-	completion      map[string]map[string]SyncStatusCompletion
-	folderStatuses  map[string]SyncthingFolderStatus
-	scanProgress    map[string]FolderScanProgressEventData
+	version         syncthing.SystemVersion
+	status          syncthing.SystemStatus
+	connections     syncthing.SystemConnection
+	prevConnections syncthing.SystemConnection
+	folderStats     map[string]syncthing.FolderStats
+	deviceStats     map[string]syncthing.DeviceStats
+	completion      map[string]map[string]syncthing.StatusCompletion
+	folderStatuses  map[string]syncthing.FolderStatus
+	scanProgress    map[string]syncthing.FolderScanProgressEventData
 }
 
 type PendingDevice struct {
@@ -130,7 +133,7 @@ func initModel() model {
 			},
 		},
 	}
-	foo := HttpData{
+	httpData := HttpData{
 		apiKey: syncthingApiKey,
 		client: client,
 		url:    *syncthingURL,
@@ -138,13 +141,13 @@ func initModel() model {
 
 	return model{
 		loading:        true,
-		httpData:       foo,
+		httpData:       httpData,
 		dump:           dump,
 		err:            err,
-		folderStatuses: make(map[string]SyncthingFolderStatus),
+		folderStatuses: make(map[string]syncthing.FolderStatus),
 		expandedFields: make(map[string]struct{}),
-		completion:     make(map[string]map[string]SyncStatusCompletion),
-		scanProgress:   make(map[string]FolderScanProgressEventData),
+		completion:     make(map[string]map[string]syncthing.StatusCompletion),
+		scanProgress:   make(map[string]syncthing.FolderScanProgressEventData),
 		pendingDevices: make(map[string]PendingDevice),
 		currentTime:    time.Now(),
 	}
@@ -168,51 +171,51 @@ func (m model) Init() tea.Cmd {
 
 // ------------------------------- MSGS ---------------------------------
 type FetchedFolderStatus struct {
-	folder SyncthingFolderStatus
+	folder syncthing.FolderStatus
 	id     string
 	err    error
 }
 
 type FetchedEventsMsg struct {
-	events []SyncthingEvent[any]
+	events []syncthing.Event[any]
 	since  int
 	err    error
 }
 
 type FetchedSystemStatusMsg struct {
-	status SyncthingSystemStatus
+	status syncthing.SystemStatus
 	err    error
 }
 
 type FetchedSystemVersionMsg struct {
-	version SyncthingSystemVersion
+	version syncthing.SystemVersion
 	err     error
 }
 
 type FetchedSystemConnectionsMsg struct {
-	connections SyncthingSystemConnections
+	connections syncthing.SystemConnection
 	err         error
 }
 
 type FetchedConfig struct {
-	config Config
+	config syncthing.Config
 	err    error
 }
 
 type FetchedFolderStats struct {
-	folderStats map[string]FolderStats
+	folderStats map[string]syncthing.FolderStats
 	err         error
 }
 
 type FetchedDeviceStats struct {
-	deviceStats map[string]DeviceStats
+	deviceStats map[string]syncthing.DeviceStats
 	err         error
 }
 
 type FetchedCompletion struct {
 	deviceID      string
 	folderID      string
-	completion    SyncStatusCompletion
+	completion    syncthing.StatusCompletion
 	hasCompletion bool
 	err           error
 }
@@ -230,7 +233,7 @@ type UserPostPutEndedMsg struct {
 
 type FetchedPendingDevices struct {
 	err     error
-	devices map[string]PendingDeviceInfo
+	devices map[string]syncthing.PendingDeviceInfo
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -240,6 +243,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if m.addDeviceModal.Show {
+			var cmd tea.Cmd
+			m.addDeviceModal, cmd = m.addDeviceModal.Update(msg)
+			return m, cmd
+		}
 		switch {
 		case key.Matches(msg, quitKeys):
 			return m, tea.Quit
@@ -247,6 +255,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	case tea.MouseMsg:
+		if m.addDeviceModal.Show {
+			var cmd tea.Cmd
+			m.addDeviceModal, cmd = m.addDeviceModal.Update(msg)
+			return m, cmd
+		}
+
 		if msg.Action != tea.MouseActionRelease || msg.Button != tea.MouseButtonLeft {
 			return m, nil
 		}
@@ -260,7 +274,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if zone.Get(PAUSE_ALL_MARK).InBounds(msg) && !m.ongoingUserAction {
-			pausedFolders := lo.Map(m.config.Folders, func(item SyncthingFolderConfig, index int) SyncthingFolderConfig {
+			pausedFolders := lo.Map(m.config.Folders, func(item syncthing.FolderConfig, index int) syncthing.FolderConfig {
 				item.Paused = true
 				return item
 			})
@@ -269,7 +283,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if zone.Get(RESUME_ALL_MARK).InBounds(msg) {
-			resumedFolders := lo.Map(m.config.Folders, func(item SyncthingFolderConfig, index int) SyncthingFolderConfig {
+			resumedFolders := lo.Map(m.config.Folders, func(item syncthing.FolderConfig, index int) syncthing.FolderConfig {
 				item.Paused = false
 				return item
 			})
@@ -315,13 +329,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			if zone.Get(pendingDeviceID + "/ignore").InBounds(msg) {
 
-				m.config.RemoteIgnoredDevices = append(m.config.RemoteIgnoredDevices, RemoteIgnoredDevice{
+				m.config.RemoteIgnoredDevices = append(m.config.RemoteIgnoredDevices, syncthing.RemoteIgnoredDevice{
 					DeviceID: pendingDeviceID,
 					Name:     m.pendingDevices[pendingDeviceID].Name,
 					Address:  m.pendingDevices[pendingDeviceID].Address,
 					Time:     m.currentTime,
 				})
 				return m, putConfig(m.httpData, m.config)
+			}
+
+			if zone.Get(pendingDeviceID + "/add-device").InBounds(msg) {
+				m.addDeviceModal = adddevice.NewPendingDevice(
+					m.pendingDevices[pendingDeviceID].Name,
+					pendingDeviceID,
+					m.config.Defaults.Device)
+				cmd := m.addDeviceModal.Init()
+
+				return m, cmd
 			}
 		}
 
@@ -350,24 +374,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds := make([]tea.Cmd, 0)
 		for _, e := range msg.events {
 			switch data := e.Data.(type) {
-			case FolderSummaryEventData:
+			case syncthing.FolderSummaryEventData:
 				m.folderStatuses[data.Folder] = data.Summary
-			case Config:
+			case syncthing.Config:
 				m.config = data
-			case FolderScanProgressEventData:
+			case syncthing.FolderScanProgressEventData:
 				m.scanProgress[data.Folder] = data
-			case StateChangedEventData:
+			case syncthing.StateChangedEventData:
 				if data.To == "scanning" {
 					delete(m.scanProgress, data.Folder)
 				}
 				if data.From == "scanning" && data.To == "idle" {
 					cmds = append(cmds, fetchFolderStats(m.httpData))
 				}
-			case FolderCompletionEventData:
+			case syncthing.FolderCompletionEventData:
 				if _, has := m.completion[data.Device]; !has {
-					m.completion[data.Device] = make(map[string]SyncStatusCompletion)
+					m.completion[data.Device] = make(map[string]syncthing.StatusCompletion)
 				}
-				m.completion[data.Device][data.Folder] = SyncStatusCompletion{
+				m.completion[data.Device][data.Folder] = syncthing.StatusCompletion{
 					Completion:  data.Completion,
 					GlobalBytes: data.GlobalBytes,
 					GlobalItems: data.GlobalItems,
@@ -377,7 +401,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					RemoteState: data.RemoteState,
 					Sequence:    data.Sequence,
 				}
-			case PendingDevicesChangedEventData:
+			case syncthing.PendingDevicesChangedEventData:
 				for _, added := range data.Added {
 					m.pendingDevices[added.DeviceID] = PendingDevice{
 						DeviceID: added.DeviceID,
@@ -481,7 +505,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if _, has := m.completion[msg.deviceID]; !has {
-			m.completion[msg.deviceID] = make(map[string]SyncStatusCompletion)
+			m.completion[msg.deviceID] = make(map[string]syncthing.StatusCompletion)
 		}
 
 		if msg.hasCompletion {
@@ -531,7 +555,7 @@ func (m model) View() string {
 		return m.err.Error()
 	}
 
-	folders := lo.Map(m.config.Folders, func(folder SyncthingFolderConfig, index int) GroupedFolderData {
+	folders := lo.Map(m.config.Folders, func(folder syncthing.FolderConfig, index int) GroupedFolderData {
 		status, hasStatus := m.folderStatuses[folder.ID]
 		stats, hasStats := m.folderStats[folder.ID]
 		scanProgress, hasScanProgress := m.scanProgress[folder.ID]
@@ -546,13 +570,13 @@ func (m model) View() string {
 		}
 	})
 
-	devices := lo.Map(m.config.Devices, func(device DeviceConfig, index int) GroupedDeviceData {
+	devices := lo.Map(m.config.Devices, func(device syncthing.DeviceConfig, index int) GroupedDeviceData {
 		completion, hasCompletion := m.completion[device.DeviceID]
 		stats, hasStats := m.deviceStats[device.DeviceID]
 		connection, hasConnection := m.connections.Connections[device.DeviceID]
 		prevConnection := m.prevConnections.Connections[device.DeviceID]
-		folders := lo.Filter(m.config.Folders, func(folder SyncthingFolderConfig, index int) bool {
-			return lo.SomeBy(folder.Devices, func(sharedDevice FolderDevice) bool {
+		folders := lo.Filter(m.config.Folders, func(folder syncthing.FolderConfig, index int) bool {
+			return lo.SomeBy(folder.Devices, func(sharedDevice syncthing.FolderDevice) bool {
 				return device.DeviceID == sharedDevice.DeviceID
 			})
 		})
@@ -574,9 +598,8 @@ func (m model) View() string {
 	pendingDevices := lo.Values(m.pendingDevices)
 	sort.Sort(PendingDeviceList(pendingDevices))
 
-	return zone.Scan(lipgloss.NewStyle().MaxHeight(m.height).Render(
+	main := lipgloss.NewStyle().MaxHeight(m.height).Render(
 		lipgloss.JoinVertical(lipgloss.Center,
-			m.currentTime.String(),
 			viewPendingDevices(pendingDevices),
 			lipgloss.JoinHorizontal(lipgloss.Top,
 				viewFolders(folders, m.config.Devices, m.status.MyID, m.expandedFields),
@@ -592,7 +615,17 @@ func (m model) View() string {
 					),
 
 					viewDevices(devices, m.currentTime),
-				)))))
+				))))
+	if m.addDeviceModal.Show {
+		modal := m.addDeviceModal.View()
+
+		x := lipgloss.Width(main)/2 - lipgloss.Width(modal)/2
+		y := 10
+		// TODO verify how to remove double zone.Scan
+		return zone.Scan(PlaceOverlay(x, y, modal, main, false))
+	}
+
+	return zone.Scan(main)
 }
 
 func viewPendingDevices(pendingDevices []PendingDevice) string {
@@ -649,22 +682,22 @@ func viewPendingDevices(pendingDevices []PendingDevice) string {
 }
 
 func viewStatus(
-	status SyncthingSystemStatus,
-	connections SyncthingSystemConnections,
-	prevConnections SyncthingSystemConnections,
-	folders []SyncthingFolderStatus,
-	version SyncthingSystemVersion,
+	status syncthing.SystemStatus,
+	connections syncthing.SystemConnection,
+	prevConnections syncthing.SystemConnection,
+	folders []syncthing.FolderStatus,
+	version syncthing.SystemVersion,
 	thisDeviceName string,
-	options Options,
+	options syncthing.Options,
 ) string {
 	foo := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		PaddingRight(1).
 		PaddingLeft(1).
 		Width(50)
-	totalFiles := lo.SumBy(folders, func(f SyncthingFolderStatus) int { return f.LocalFiles })
-	totalDirectories := lo.SumBy(folders, func(f SyncthingFolderStatus) int { return f.LocalDirectories })
-	totalBytes := lo.SumBy(folders, func(f SyncthingFolderStatus) int64 { return f.LocalBytes })
+	totalFiles := lo.SumBy(folders, func(f syncthing.FolderStatus) int { return f.LocalFiles })
+	totalDirectories := lo.SumBy(folders, func(f syncthing.FolderStatus) int { return f.LocalDirectories })
+	totalBytes := lo.SumBy(folders, func(f syncthing.FolderStatus) int64 { return f.LocalBytes })
 
 	inBytesPerSecond := byteThroughputInSeconds(
 		TotalBytes{
@@ -759,7 +792,7 @@ var btnStyle = lipgloss.
 
 func viewFolders(
 	folders []GroupedFolderData,
-	devices []DeviceConfig,
+	devices []syncthing.DeviceConfig,
 	myID string,
 	expandedFolder map[string]struct{},
 ) string {
@@ -800,7 +833,7 @@ func spaceAroundTable() *table.Table {
 		})
 }
 
-func viewFolder(folder GroupedFolderData, devices []DeviceConfig, myID string, expanded bool) string {
+func viewFolder(folder GroupedFolderData, devices []syncthing.DeviceConfig, myID string, expanded bool) string {
 	status := folderStatus(folder)
 	folderStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder(), true).
@@ -840,12 +873,12 @@ func viewFolder(folder GroupedFolderData, devices []DeviceConfig, myID string, e
 	if expanded {
 		foo := lo.Ternary(folder.config.FsWatcherEnabled, "Enabled", "Disabled")
 
-		sharedDevices := lo.FilterMap(folder.config.Devices, func(sharedDevice FolderDevice, index int) (string, bool) {
+		sharedDevices := lo.FilterMap(folder.config.Devices, func(sharedDevice syncthing.FolderDevice, index int) (string, bool) {
 			if sharedDevice.DeviceID == myID {
 				// folder devices includes the host device. we want to ignore our device
 				return "", false
 			}
-			d, found := lo.Find(devices, func(d DeviceConfig) bool {
+			d, found := lo.Find(devices, func(d syncthing.DeviceConfig) bool {
 				return d.DeviceID == sharedDevice.DeviceID
 			})
 
@@ -1067,7 +1100,7 @@ type GroupedCompletion struct {
 	Completion  int
 }
 
-func groupCompletion(arg ...SyncStatusCompletion) GroupedCompletion {
+func groupCompletion(arg ...syncthing.StatusCompletion) GroupedCompletion {
 	foo := GroupedCompletion{}
 	for _, c := range arg {
 		foo.NeedBytes += c.NeedBytes
@@ -1366,7 +1399,7 @@ func folderColor(foo GroupedFolderData) lipgloss.AdaptiveColor {
 	return lipgloss.AdaptiveColor{Light: "", Dark: ""}
 }
 
-func thisDeviceName(myID string, devices []DeviceConfig) string {
+func thisDeviceName(myID string, devices []syncthing.DeviceConfig) string {
 	for _, device := range devices {
 		if device.DeviceID == myID {
 			return device.Name
@@ -1396,25 +1429,25 @@ func byteThroughputInSeconds(before, after TotalBytes) int64 {
 }
 
 type GroupedFolderData struct {
-	config          SyncthingFolderConfig
-	status          SyncthingFolderStatus
+	config          syncthing.FolderConfig
+	status          syncthing.FolderStatus
 	hasStatus       bool
-	stats           FolderStats
+	stats           syncthing.FolderStats
 	hasStats        bool
-	scanProgress    FolderScanProgressEventData
+	scanProgress    syncthing.FolderScanProgressEventData
 	hasScanProgress bool
 }
 
 type GroupedDeviceData struct {
-	config         DeviceConfig
-	completion     map[string]SyncStatusCompletion
+	config         syncthing.DeviceConfig
+	completion     map[string]syncthing.StatusCompletion
 	hasCompletion  bool
-	stats          DeviceStats
+	stats          syncthing.DeviceStats
 	hasStats       bool
-	connection     Connection
+	connection     syncthing.Connection
 	hasConnection  bool
-	prevConnection Connection
-	folders        []SyncthingFolderConfig
+	prevConnection syncthing.Connection
+	folders        []syncthing.FolderConfig
 	expanded       bool
 }
 

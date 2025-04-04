@@ -1,11 +1,11 @@
-package main
+package syncthing
 
 import (
 	"time"
 )
 
 // SYNCTHING DATA STRUCTURES
-type SyncthingFolderConfig struct {
+type FolderConfig struct {
 	ID                      string         `json:"id"`
 	Label                   string         `json:"label"`
 	FilesystemType          string         `json:"filesystemType"`
@@ -48,7 +48,7 @@ type SyncthingFolderConfig struct {
 	XattrFilter             XattrFilter    `json:"xattrFilter"`
 }
 
-type SyncthingFolderStatus struct {
+type FolderStatus struct {
 	Errors                        int            `json:"errors"`
 	PullErrors                    int            `json:"pullErrors"`
 	Invalid                       string         `json:"invalid"`
@@ -117,7 +117,7 @@ type XattrFilter struct {
 	MaxTotalSize       int      `json:"maxTotalSize"`
 }
 
-type SyncthingSystemStatus struct {
+type SystemStatus struct {
 	Alloc                   int64                       `json:"alloc"`
 	ConnectionServiceStatus map[string]ConnectionStatus `json:"connectionServiceStatus"`
 	CPUPercent              float64                     `json:"cpuPercent"`
@@ -176,7 +176,7 @@ type Total struct {
 
 type Connections map[string]Connection
 
-type SyncthingSystemConnections struct {
+type SystemConnection struct {
 	Connections Connections `json:"connections"`
 	Total       Total       `json:"total"`
 }
@@ -208,7 +208,7 @@ type IgnoredFolder struct {
 	Label string    `json:"label"`
 }
 
-type SyncthingSystemVersion struct {
+type SystemVersion struct {
 	Arch        string    `json:"arch"`
 	Codename    string    `json:"codename"`
 	Container   bool      `json:"container"`
@@ -237,14 +237,14 @@ type FolderStats struct {
 }
 
 type Config struct {
-	Version              int                     `json:"version"`
-	Folders              []SyncthingFolderConfig `json:"folders"`
-	Devices              []DeviceConfig          `json:"devices"`
-	GUI                  GUI                     `json:"gui"`
-	LDAP                 LDAP                    `json:"ldap"`
-	Options              Options                 `json:"options"`
-	Defaults             Defaults                `json:"defaults"`
-	RemoteIgnoredDevices []RemoteIgnoredDevice   `json:"remoteIgnoredDevices"`
+	Version              int                   `json:"version"`
+	Folders              []FolderConfig        `json:"folders"`
+	Devices              []DeviceConfig        `json:"devices"`
+	GUI                  GUI                   `json:"gui"`
+	LDAP                 LDAP                  `json:"ldap"`
+	Options              Options               `json:"options"`
+	Defaults             Defaults              `json:"defaults"`
+	RemoteIgnoredDevices []RemoteIgnoredDevice `json:"remoteIgnoredDevices"`
 }
 
 type RemoteIgnoredDevice struct {
@@ -400,8 +400,8 @@ type DeviceDefaults struct {
 	Paused                   bool     `json:"paused"`
 	AllowedNetworks          []string `json:"allowedNetworks"`
 	AutoAcceptFolders        bool     `json:"autoAcceptFolders"`
-	MaxSendKbps              int      `json:"maxSendKbps"`
-	MaxRecvKbps              int      `json:"maxRecvKbps"`
+	MaxSendKbps              int64    `json:"maxSendKbps"`
+	MaxRecvKbps              int64    `json:"maxRecvKbps"`
 	IgnoredFolders           []string `json:"ignoredFolders"`
 	MaxRequestKiB            int      `json:"maxRequestKiB"`
 	Untrusted                bool     `json:"untrusted"`
@@ -424,13 +424,13 @@ type DeviceStats struct {
 }
 
 // todo rename struct
-type SyncStatusCompletion struct {
+type StatusCompletion struct {
 	Completion  float64 `json:"completion"`
 	GlobalBytes int64   `json:"globalBytes"`
-	NeedBytes   int64   `json:"needBytes"`
 	GlobalItems int     `json:"globalItems"`
-	NeedItems   int     `json:"needItems"`
+	NeedBytes   int64   `json:"needBytes"`
 	NeedDeletes int     `json:"needDeletes"`
+	NeedItems   int     `json:"needItems"`
 	RemoteState string  `json:"remoteState"`
 	Sequence    int     `json:"sequence"`
 }
@@ -443,7 +443,7 @@ type PendingDeviceInfo struct {
 
 // EVENTS PAYLOAD
 
-type SyncthingEvent[DATA any] struct {
+type Event[DATA any] struct {
 	ID       int       `json:"id"`
 	GlobalID int       `json:"globalID"`
 	Time     time.Time `json:"time"`
@@ -452,8 +452,8 @@ type SyncthingEvent[DATA any] struct {
 }
 
 type FolderSummaryEventData struct {
-	Folder  string                `json:"folder"`
-	Summary SyncthingFolderStatus `json:"summary"`
+	Folder  string       `json:"folder"`
+	Summary FolderStatus `json:"summary"`
 }
 
 type FolderScanProgressEventData struct {
@@ -471,16 +471,9 @@ type StateChangedEventData struct {
 }
 
 type FolderCompletionEventData struct {
-	Completion  float64 `json:"completion"`
-	Device      string  `json:"device"`
-	Folder      string  `json:"folder"`
-	GlobalBytes int64   `json:"globalBytes"`
-	GlobalItems int     `json:"globalItems"`
-	NeedBytes   int64   `json:"needBytes"`
-	NeedDeletes int     `json:"needDeletes"`
-	NeedItems   int     `json:"needItems"`
-	RemoteState string  `json:"remoteState"`
-	Sequence    int     `json:"sequence"`
+	Device string `json:"device"`
+	Folder string `json:"folder"`
+	StatusCompletion
 }
 
 type PendingDevicesChangedEventData struct {
