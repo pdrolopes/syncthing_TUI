@@ -193,8 +193,8 @@ type DeviceConfig struct {
 	Paused                   bool            `json:"paused"`
 	AllowedNetworks          []string        `json:"allowedNetworks"`
 	AutoAcceptFolders        bool            `json:"autoAcceptFolders"`
-	MaxSendKbps              int             `json:"maxSendKbps"`
-	MaxRecvKbps              int             `json:"maxRecvKbps"`
+	MaxSendKbps              int64           `json:"maxSendKbps"`
+	MaxRecvKbps              int64           `json:"maxRecvKbps"`
 	IgnoredFolders           []IgnoredFolder `json:"ignoredFolders"`
 	MaxRequestKiB            int             `json:"maxRequestKiB"`
 	Untrusted                bool            `json:"untrusted"`

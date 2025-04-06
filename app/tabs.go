@@ -1,4 +1,4 @@
-package adddevice
+package app
 
 import "github.com/charmbracelet/lipgloss"
 

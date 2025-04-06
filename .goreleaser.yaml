@@ -14,7 +14,7 @@ builds:
     flags: ["-trimpath"]
     targets: ["go_first_class"]
     ldflags:
-      - -X main.VERSION={{.Version}}
+      - -X app.VERSION={{.Version}}
 
 changelog:
   sort: asc
