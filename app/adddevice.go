@@ -35,7 +35,11 @@ type AddDeviceModel struct {
 	compression         string
 }
 
-func NewPendingDevice(deviceName, deviceID string, deviceDefaults syncthing.DeviceDefaults, httpData HttpData) AddDeviceModel {
+func NewPendingDevice(
+	deviceName, deviceID string,
+	deviceDefaults syncthing.DeviceDefaults,
+	httpData HttpData,
+) AddDeviceModel {
 	deviceIdInput := textinput.New()
 	deviceIdInput.SetValue(deviceID)
 	deviceIdInput.CharLimit = 63
@@ -150,7 +154,10 @@ func (m AddDeviceModel) View() string {
 	tabViews := make([]string, 0, len(tabLabels))
 	for i, l := range tabLabels {
 		if i == m.activeTab {
-			tabViews = append(tabViews, zone.Mark(fmt.Sprintf("tab-click/%d", i), activeTab.Render(l)))
+			tabViews = append(
+				tabViews,
+				zone.Mark(fmt.Sprintf("tab-click/%d", i), activeTab.Render(l)),
+			)
 		} else {
 			tabViews = append(tabViews, zone.Mark(fmt.Sprintf("tab-click/%d", i), tab.Render(l)))
 		}
@@ -165,7 +172,11 @@ func (m AddDeviceModel) View() string {
 	header := lipgloss.JoinHorizontal(lipgloss.Bottom, tabs, gap)
 
 	containerRest := tab.BorderTop(false).Padding(1, 1).Width(m.width).Height(m.height)
-	actions := lipgloss.PlaceHorizontal(containerRest.GetWidth()-containerRest.GetHorizontalPadding(), lipgloss.Right, m.viewActions())
+	actions := lipgloss.PlaceHorizontal(
+		containerRest.GetWidth()-containerRest.GetHorizontalPadding(),
+		lipgloss.Right,
+		m.viewActions(),
+	)
 	contentHeight := m.height - lipgloss.Height(header) + lipgloss.Height(actions)
 	var content string
 	switch m.activeTab {

@@ -43,7 +43,11 @@ func fetchEvents(httpData HttpData, since int) tea.Cmd {
 		params := url.Values{}
 		params.Add("since", fmt.Sprint(since))
 		var events []syncthing.Event[json.RawMessage]
-		err := fetchBytes("http://localhost:8384/rest/events?"+params.Encode(), httpData.apiKey, &events)
+		err := fetchBytes(
+			"http://localhost:8384/rest/events?"+params.Encode(),
+			httpData.apiKey,
+			&events,
+		)
 		if err != nil {
 			return FetchedEventsMsg{err: err, since: since}
 		}
@@ -322,7 +326,10 @@ func postScan(foo HttpData, folderId string) tea.Cmd {
 func putFolder(foo HttpData, folders ...syncthing.FolderConfig) tea.Cmd {
 	return func() tea.Msg {
 		err := put("http://localhost:8384/rest/config/folders/", foo.apiKey, folders)
-		ids := strings.Join(lo.Map(folders, func(item syncthing.FolderConfig, index int) string { return item.ID }), ", ")
+		ids := strings.Join(
+			lo.Map(folders, func(item syncthing.FolderConfig, index int) string { return item.ID }),
+			", ",
+		)
 		return UserPostPutEndedMsg{err: err, action: "putFolder: " + ids}
 	}
 }
@@ -389,7 +396,10 @@ func putConfig(httpData HttpData, config syncthing.Config) tea.Cmd {
 }
 
 func currentTimeCmd() tea.Cmd {
-	return tea.Every(REFETCH_CURRENT_TIME_INTERVAL, func(currentTime time.Time) tea.Msg { return TickedCurrentTimeMsg{currentTime: currentTime} })
+	return tea.Every(
+		REFETCH_CURRENT_TIME_INTERVAL,
+		func(currentTime time.Time) tea.Msg { return TickedCurrentTimeMsg{currentTime: currentTime} },
+	)
 }
 
 func fetchPendingDevices(httpData HttpData) tea.Cmd {

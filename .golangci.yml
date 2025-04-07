@@ -21,6 +21,12 @@ linters:
 formatters:
   enable:
     - gofumpt
+    - golines
+  settings:
+    gofumpt:
+      extra-rules: true
+    golines:
+      max-len: 100
   exclusions:
     generated: lax
     paths:
