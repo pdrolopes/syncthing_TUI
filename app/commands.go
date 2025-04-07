@@ -450,3 +450,25 @@ func deletePendingDevice(httpData HttpData, deviceID string) tea.Cmd {
 		return nil
 	}
 }
+
+func postRevertChanges(httpData HttpData, folderID string) tea.Cmd {
+	return func() tea.Msg {
+		params := url.Values{}
+		params.Add("folder", folderID)
+		url := httpData.url.JoinPath(DB_REVERT)
+		url.RawQuery = params.Encode()
+		req, err := http.NewRequest(http.MethodPost, url.String(), nil)
+		if err != nil {
+			return nil
+		}
+
+		req.Header.Set("X-API-Key", httpData.apiKey)
+		resp, err := httpData.client.Do(req)
+		if err != nil {
+			return nil
+		}
+		defer resp.Body.Close()
+
+		return nil
+	}
+}

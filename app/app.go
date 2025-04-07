@@ -35,15 +35,16 @@ type errMsg error
 // TODO when there a no more bytes to be transfered but still have files to be delete. show as 95%
 
 type model struct {
-	dump              io.Writer
-	loading           bool
-	err               error
-	width             int
-	height            int
-	expandedFields    map[string]struct{}
-	ongoingUserAction bool
-	currentTime       time.Time
-	addDeviceModal    AddDeviceModel
+	dump                           io.Writer
+	loading                        bool
+	err                            error
+	width                          int
+	height                         int
+	expandedFields                 map[string]struct{}
+	ongoingUserAction              bool
+	currentTime                    time.Time
+	addDeviceModal                 AddDeviceModel
+	confirmRevertLocalChangesModal ConfirmRevertLocalAdditions
 
 	// http data
 	httpData HttpData
@@ -82,6 +83,11 @@ type HttpData struct {
 	url    url.URL
 }
 
+type ConfirmRevertLocalAdditions struct {
+	Show     bool
+	folderID string
+}
+
 // ------------------ constants -----------------------
 const (
 	REFETCH_STATUS_INTERVAL       = 10 * time.Second
@@ -97,6 +103,7 @@ const (
 	CONFIG_DEVICES          = "/rest/config/devices"
 	DB_COMPLETION_PATH      = "/rest/db/completion"
 	DB_SCAN                 = "/rest/db/scan"
+	DB_REVERT               = "/rest/db/revert"
 	CLUSTER_PENDING_DEVICES = "/rest/cluster/pending/devices"
 	CLUSTER_PENDING_FOLDERS = "/rest/cluster/pending/folders"
 )
@@ -249,6 +256,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addDeviceModal, cmd = m.addDeviceModal.Update(msg)
 			return m, cmd
 		}
+
+		if m.confirmRevertLocalChangesModal.Show {
+			return handleKeyBoardEventsRevertModal(m, msg)
+		}
+
 		switch {
 		case key.Matches(msg, quitKeys):
 			return m, tea.Quit
@@ -261,94 +273,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addDeviceModal, cmd = m.addDeviceModal.Update(msg)
 			return m, cmd
 		}
-
-		if msg.Action != tea.MouseActionRelease || msg.Button != tea.MouseButtonLeft {
-			return m, nil
+		if m.confirmRevertLocalChangesModal.Show {
+			return handleMouseEventsRevertModal(m, msg)
 		}
 
-		if zone.Get(RESCAN_ALL_MARK).InBounds(msg) {
-			cmds := make([]tea.Cmd, 0, len(m.config.Folders))
-			for _, f := range m.config.Folders {
-				cmds = append(cmds, postScan(m.httpData, f.ID))
-			}
-			return m, tea.Batch(cmds...)
-		}
-
-		if zone.Get(PAUSE_ALL_MARK).InBounds(msg) && !m.ongoingUserAction {
-			pausedFolders := lo.Map(m.config.Folders, func(item syncthing.FolderConfig, index int) syncthing.FolderConfig {
-				item.Paused = true
-				return item
-			})
-			m.ongoingUserAction = true
-			return m, putFolder(m.httpData, pausedFolders...)
-		}
-
-		if zone.Get(RESUME_ALL_MARK).InBounds(msg) {
-			resumedFolders := lo.Map(m.config.Folders, func(item syncthing.FolderConfig, index int) syncthing.FolderConfig {
-				item.Paused = false
-				return item
-			})
-			m.ongoingUserAction = true
-			return m, putFolder(m.httpData, resumedFolders...)
-		}
-
-		for _, folder := range m.config.Folders {
-			if zone.Get(folder.ID).InBounds(msg) {
-				if _, exists := m.expandedFields[folder.ID]; exists {
-					delete(m.expandedFields, folder.ID)
-				} else {
-					m.expandedFields[folder.ID] = struct{}{}
-				}
-				return m, nil
-			}
-
-			if zone.Get(folder.ID+"/pause").InBounds(msg) && !m.ongoingUserAction {
-				folder.Paused = !folder.Paused
-				m.ongoingUserAction = true
-				return m, putFolder(m.httpData, folder)
-			}
-
-			if zone.Get(folder.ID + "/rescan").InBounds(msg) {
-				return m, postScan(m.httpData, folder.ID)
-			}
-		}
-
-		for _, device := range m.config.Devices {
-			if zone.Get(device.DeviceID).InBounds(msg) {
-				if _, exists := m.expandedFields[device.DeviceID]; exists {
-					delete(m.expandedFields, device.DeviceID)
-				} else {
-					m.expandedFields[device.DeviceID] = struct{}{}
-				}
-				return m, nil
-			}
-		}
-		for pendingDeviceID := range m.pendingDevices {
-			if zone.Get(pendingDeviceID + "/dismiss").InBounds(msg) {
-				return m, deletePendingDevice(m.httpData, pendingDeviceID)
-			}
-
-			if zone.Get(pendingDeviceID + "/ignore").InBounds(msg) {
-
-				m.config.RemoteIgnoredDevices = append(m.config.RemoteIgnoredDevices, syncthing.RemoteIgnoredDevice{
-					DeviceID: pendingDeviceID,
-					Name:     m.pendingDevices[pendingDeviceID].Name,
-					Address:  m.pendingDevices[pendingDeviceID].Address,
-					Time:     m.currentTime,
-				})
-				return m, putConfig(m.httpData, m.config)
-			}
-
-			if zone.Get(pendingDeviceID + "/add-device").InBounds(msg) {
-				m.addDeviceModal = NewPendingDevice(
-					m.pendingDevices[pendingDeviceID].Name,
-					pendingDeviceID,
-					m.config.Defaults.Device,
-					m.httpData)
-				cmd := m.addDeviceModal.Init()
-
-				return m, cmd
-			}
+		if msg.Action == tea.MouseActionRelease && msg.Button == tea.MouseButtonLeft {
+			return handleMouseLeftClick(m, msg)
 		}
 
 		return m, nil
@@ -547,6 +477,101 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 }
 
+func handleMouseLeftClick(m model, msg tea.MouseMsg) (model, tea.Cmd) {
+	if zone.Get(RESCAN_ALL_MARK).InBounds(msg) {
+		cmds := make([]tea.Cmd, 0, len(m.config.Folders))
+		for _, f := range m.config.Folders {
+			cmds = append(cmds, postScan(m.httpData, f.ID))
+		}
+		return m, tea.Batch(cmds...)
+	}
+
+	if zone.Get(PAUSE_ALL_MARK).InBounds(msg) && !m.ongoingUserAction {
+		pausedFolders := lo.Map(m.config.Folders, func(item syncthing.FolderConfig, index int) syncthing.FolderConfig {
+			item.Paused = true
+			return item
+		})
+		m.ongoingUserAction = true
+		return m, putFolder(m.httpData, pausedFolders...)
+	}
+
+	if zone.Get(RESUME_ALL_MARK).InBounds(msg) {
+		resumedFolders := lo.Map(m.config.Folders, func(item syncthing.FolderConfig, index int) syncthing.FolderConfig {
+			item.Paused = false
+			return item
+		})
+		m.ongoingUserAction = true
+		return m, putFolder(m.httpData, resumedFolders...)
+	}
+
+	for _, folder := range m.config.Folders {
+		if zone.Get(folder.ID).InBounds(msg) {
+			if _, exists := m.expandedFields[folder.ID]; exists {
+				delete(m.expandedFields, folder.ID)
+			} else {
+				m.expandedFields[folder.ID] = struct{}{}
+			}
+			return m, nil
+		}
+
+		if zone.Get(folder.ID+"/pause").InBounds(msg) && !m.ongoingUserAction {
+			folder.Paused = !folder.Paused
+			m.ongoingUserAction = true
+			return m, putFolder(m.httpData, folder)
+		}
+
+		if zone.Get(folder.ID + "/rescan").InBounds(msg) {
+			return m, postScan(m.httpData, folder.ID)
+		}
+
+		if zone.Get(folder.ID + "/revert-local-additions").InBounds(msg) {
+			m.confirmRevertLocalChangesModal.Show = true
+			m.confirmRevertLocalChangesModal.folderID = folder.ID
+			return m, nil
+		}
+	}
+
+	for _, device := range m.config.Devices {
+		if zone.Get(device.DeviceID).InBounds(msg) {
+			if _, exists := m.expandedFields[device.DeviceID]; exists {
+				delete(m.expandedFields, device.DeviceID)
+			} else {
+				m.expandedFields[device.DeviceID] = struct{}{}
+			}
+			return m, nil
+		}
+	}
+	for pendingDeviceID := range m.pendingDevices {
+		if zone.Get(pendingDeviceID + "/dismiss").InBounds(msg) {
+			return m, deletePendingDevice(m.httpData, pendingDeviceID)
+		}
+
+		if zone.Get(pendingDeviceID + "/ignore").InBounds(msg) {
+
+			m.config.RemoteIgnoredDevices = append(m.config.RemoteIgnoredDevices, syncthing.RemoteIgnoredDevice{
+				DeviceID: pendingDeviceID,
+				Name:     m.pendingDevices[pendingDeviceID].Name,
+				Address:  m.pendingDevices[pendingDeviceID].Address,
+				Time:     m.currentTime,
+			})
+			return m, putConfig(m.httpData, m.config)
+		}
+
+		if zone.Get(pendingDeviceID + "/add-device").InBounds(msg) {
+			m.addDeviceModal = NewPendingDevice(
+				m.pendingDevices[pendingDeviceID].Name,
+				pendingDeviceID,
+				m.config.Defaults.Device,
+				m.httpData)
+			cmd := m.addDeviceModal.Init()
+
+			return m, cmd
+		}
+	}
+
+	return m, nil
+}
+
 // ------------------ VIEW --------------------------
 
 func (m model) View() string {
@@ -619,6 +644,7 @@ func (m model) View() string {
 
 					viewDevices(devices, m.currentTime),
 				))))
+
 	if m.addDeviceModal.Show {
 		modal := m.addDeviceModal.View()
 
@@ -628,7 +654,80 @@ func (m model) View() string {
 		return zone.Scan(PlaceOverlay(x, y, modal, main, false))
 	}
 
+	if m.confirmRevertLocalChangesModal.Show {
+		modal := viewConfirmRevertLocalChangesFolder()
+
+		x := lipgloss.Width(main)/2 - lipgloss.Width(modal)/2
+		y := 10
+		// TODO verify how to remove double zone.Scan
+		return zone.Scan(PlaceOverlay(x, y, modal, main, false))
+	}
+
 	return zone.Scan(main)
+}
+
+func viewConfirmRevertLocalChangesFolder() string {
+	width := 60 // TODO VERIFY MODAL WIDTH
+	header := lipgloss.NewStyle().Padding(1, 1).Width(width).Background(styles.ErrorColor).Render("Revert Local Changes")
+	body := lipgloss.NewStyle().Padding(1, 1).Width(width).Render(`Warning!
+
+The folder content on this device will be overwritten to become identical with other devices. Files newly added here will be deleted.
+
+Are you sure you want to revert all local changes?
+`)
+	var actions string
+	{
+		layout := lipgloss.NewStyle().Padding(0, 1).Width(width)
+		btnConfirm := zone.Mark("confirm-revert-local-changes", styles.NegativeBtn.Render("Revert"))
+		btnCancel := zone.Mark("cancel-revert-local-changes", styles.BtnStyleV2.Render("Cancel"))
+		gap := strings.Repeat(" ", layout.GetWidth()-layout.GetHorizontalPadding()-lipgloss.Width(btnConfirm)-lipgloss.Width(btnCancel))
+		actions = layout.Render(lipgloss.JoinHorizontal(lipgloss.Top, btnConfirm, gap, btnCancel))
+	}
+
+	return zone.Mark("revert-local-changes-modal", lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Render(
+		lipgloss.JoinVertical(lipgloss.Left, header, body, actions),
+	))
+}
+
+func handleMouseEventsRevertModal(m model, msg tea.MouseMsg) (model, tea.Cmd) {
+	if msg.Action != tea.MouseActionRelease || msg.Button != tea.MouseButtonLeft {
+		return m, nil
+	}
+	// click out of modal bounds
+	if !zone.Get("revert-local-changes-modal").InBounds(msg) {
+		m.confirmRevertLocalChangesModal.Show = false
+		m.confirmRevertLocalChangesModal.folderID = ""
+		return m, nil
+	}
+
+	if zone.Get("confirm-revert-local-changes").InBounds(msg) {
+		folderID := m.confirmRevertLocalChangesModal.folderID
+		m.confirmRevertLocalChangesModal.folderID = ""
+		m.confirmRevertLocalChangesModal.Show = false
+		cmd := postRevertChanges(m.httpData, folderID)
+		return m, cmd
+	}
+
+	if zone.Get("cancel-revert-local-changes").InBounds(msg) {
+		m.confirmRevertLocalChangesModal.Show = false
+		m.confirmRevertLocalChangesModal.folderID = ""
+		return m, nil
+	}
+
+	return m, nil
+}
+
+func handleKeyBoardEventsRevertModal(m model, msg tea.KeyMsg) (model, tea.Cmd) {
+	if msg.Type == tea.KeyEscape {
+		m.confirmRevertLocalChangesModal.Show = false
+		m.confirmRevertLocalChangesModal.folderID = ""
+	}
+
+	if msg.String() == "q" || msg.Type == tea.KeyCtrlC || msg.Type == tea.KeyCtrlD {
+		return m, tea.Quit
+	}
+
+	return m, nil
 }
 
 func viewPendingDevices(pendingDevices []PendingDevice) string {
@@ -773,14 +872,6 @@ func viewStatus(
 	)
 }
 
-// var neutralBtn = btnStyleV2
-
-var btnStyle = lipgloss.
-	NewStyle().
-	Border(lipgloss.RoundedBorder(), true).
-	PaddingLeft(1).
-	PaddingRight(1)
-
 func viewFolders(
 	folders []GroupedFolderData,
 	devices []syncthing.DeviceConfig,
@@ -796,13 +887,13 @@ func viewFolders(
 	areAllFoldersPaused := lo.EveryBy(folders, func(item GroupedFolderData) bool { return item.config.Paused })
 	anyFolderPaused := lo.SomeBy(folders, func(item GroupedFolderData) bool { return item.config.Paused })
 	if !areAllFoldersPaused {
-		btns = append(btns, zone.Mark(PAUSE_ALL_MARK, btnStyle.Render("Pause All")))
+		btns = append(btns, zone.Mark(PAUSE_ALL_MARK, styles.BtnStyleV2.Render("Pause All")))
 	}
 	if anyFolderPaused {
-		btns = append(btns, zone.Mark(RESUME_ALL_MARK, btnStyle.Render("Resume All")))
+		btns = append(btns, zone.Mark(RESUME_ALL_MARK, styles.BtnStyleV2.Render("Resume All")))
 	}
-	btns = append(btns, zone.Mark(RESCAN_ALL_MARK, btnStyle.Render("Rescan All")))
-	btns = append(btns, zone.Mark(ADD_FOLDER_MARK, btnStyle.Render("Add Folder")))
+	btns = append(btns, zone.Mark(RESCAN_ALL_MARK, styles.BtnStyleV2.Render("Rescan All")))
+	btns = append(btns, zone.Mark(ADD_FOLDER_MARK, styles.BtnStyleV2.Render("Add Folder")))
 
 	views = append(views, (lipgloss.JoinHorizontal(lipgloss.Top, btns...)))
 
@@ -956,25 +1047,40 @@ func viewFolder(folder GroupedFolderData, devices []syncthing.DeviceConfig, myID
 		}
 		verticalViews = append(verticalViews, bar.Render())
 
-		footerStyle := lipgloss.
-			NewStyle().
-			Width(folderStyleInnerWidth).
-			Align(lipgloss.Right)
+		var footer string
+		{
+			revertLocalChangesBtn := zone.Mark(folder.config.ID+"/revert-local-additions",
+				styles.NegativeBtn.Render("Revert Local Changes"))
 
-		pauseBtn := zone.
-			Mark(folder.config.ID+"/pause",
-				btnStyle.
-					Render(lo.Ternary(
-						folderStatus(folder) == Paused,
-						"Resume",
-						"Pause",
-					)))
-		rescanBtn := zone.
-			Mark(folder.config.ID+"/rescan",
-				btnStyle.Render("Rescan"))
+			pauseBtn := zone.
+				Mark(folder.config.ID+"/pause",
+					styles.BtnStyleV2.
+						Render(lo.Ternary(
+							folderStatus(folder) == Paused,
+							"Resume",
+							"Pause",
+						)))
+			rescanBtn := zone.
+				Mark(folder.config.ID+"/rescan",
+					styles.BtnStyleV2.Render("Rescan"))
 
-		verticalViews = append(verticalViews, footerStyle.Render(lipgloss.JoinHorizontal(lipgloss.Top, pauseBtn, rescanBtn)))
+			gap := strings.Repeat(
+				" ",
+				folderStyleInnerWidth-
+					lipgloss.Width(revertLocalChangesBtn)-
+					lipgloss.Width(pauseBtn)-
+					lipgloss.Width(rescanBtn))
 
+			if status == LocalAdditions || status == LocalUnencrypted {
+				footer = lipgloss.JoinHorizontal(lipgloss.Top, revertLocalChangesBtn, gap, pauseBtn, rescanBtn)
+			} else {
+				alignRight := lipgloss.NewStyle().Align(lipgloss.Right).Width(folderStyleInnerWidth)
+				footer = alignRight.Render(lipgloss.JoinHorizontal(lipgloss.Top, pauseBtn, rescanBtn))
+			}
+		}
+
+		verticalViews = append(verticalViews, "")
+		verticalViews = append(verticalViews, footer)
 	}
 
 	return folderStyle.Render(lipgloss.JoinVertical(lipgloss.Left, verticalViews...))

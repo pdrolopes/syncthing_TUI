@@ -13,7 +13,7 @@ var (
 	AccentColor  = lipgloss.AdaptiveColor{Light: "#005f87", Dark: "#00afd7"}
 	SuccessColor = lipgloss.AdaptiveColor{Light: "#008700", Dark: "#00d700"}
 	WarningColor = lipgloss.AdaptiveColor{Light: "#af8700", Dark: "#ffd700"}
-	// errorColor     = lipgloss.AdaptiveColor{Light: "#d70000", Dark: "#ff0000"}
+	ErrorColor   = lipgloss.AdaptiveColor{Light: "#ff7092", Dark: "#ff7092"}
 	// highlightColor = lipgloss.AdaptiveColor{Light: "#ffd700", Dark: "#ffaf00"}
 	// mutedColor     = lipgloss.AdaptiveColor{Light: "#6c757d", Dark: "#adb5bd"}
 	Purple = lipgloss.AdaptiveColor{Light: "#6920e8", Dark: "#8454fc"}
@@ -28,5 +28,5 @@ var PositiveBtn = BtnStyleV2.
 	Foreground(lipgloss.Color("#ffffff"))
 
 var NegativeBtn = BtnStyleV2.
-	Background(lipgloss.AdaptiveColor{Light: "#ff7092", Dark: "#ff7092"}).
+	Background(ErrorColor).
 	Foreground(lipgloss.Color("#ffffff"))
