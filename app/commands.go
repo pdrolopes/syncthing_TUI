@@ -2,17 +2,27 @@ package app
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/pdrolopes/syncthing_TUI/syncthing"
-	"github.com/samber/lo"
+)
+
+const (
+	CONFIG                  = "/rest/config"
+	CONFIG_DEVICES          = "/rest/config/devices"
+	CONFIG_FOLDERS          = "/rest/config/folders"
+	DB_COMPLETION_PATH      = "/rest/db/completion"
+	DB_SCAN                 = "/rest/db/scan"
+	DB_REVERT               = "/rest/db/revert"
+	CLUSTER_PENDING_DEVICES = "/rest/cluster/pending/devices"
+	CLUSTER_PENDING_FOLDERS = "/rest/cluster/pending/folders"
 )
 
 func fetchFolderStatus(foo HttpData, folderID string) tea.Cmd {
@@ -323,17 +333,6 @@ func postScan(foo HttpData, folderId string) tea.Cmd {
 	}
 }
 
-func putFolder(foo HttpData, folders ...syncthing.FolderConfig) tea.Cmd {
-	return func() tea.Msg {
-		err := put("http://localhost:8384/rest/config/folders/", foo.apiKey, folders)
-		ids := strings.Join(
-			lo.Map(folders, func(item syncthing.FolderConfig, index int) string { return item.ID }),
-			", ",
-		)
-		return UserPostPutEndedMsg{err: err, action: "putFolder: " + ids}
-	}
-}
-
 func PostDeviceConfig(httpData HttpData, device syncthing.DeviceConfig) tea.Cmd {
 	return func() tea.Msg {
 		deviceData, err := json.Marshal(device)
@@ -481,4 +480,80 @@ func postRevertChanges(httpData HttpData, folderID string) tea.Cmd {
 
 		return nil
 	}
+}
+
+func updateFolderPause(httpData HttpData, folderID string, paused bool) tea.Cmd {
+	return func() tea.Msg {
+		type PatchData struct {
+			Paused bool `json:"paused"`
+		}
+		err := patchFolder(httpData, folderID, PatchData{paused})
+
+		return UserPostPutEndedMsg{err: err, action: "updateFolderPause: " + folderID}
+	}
+}
+
+func patchFolder(httpData HttpData, folderID string, patchData any) error {
+	json, err := json.Marshal(patchData)
+	if err != nil {
+		return fmt.Errorf("error marshalling JSON: %w", err)
+	}
+
+	url := httpData.url.JoinPath(CONFIG_FOLDERS)
+	url = url.JoinPath(folderID)
+	req, err := http.NewRequest(http.MethodPatch, url.String(), bytes.NewBuffer(json))
+	if err != nil {
+		return fmt.Errorf("failed folder patch request: %w", err)
+	}
+
+	req.Header.Set("X-API-Key", httpData.apiKey)
+	resp, err := httpData.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed folder patch request: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf(
+			"patchFolder \"%s\" failed. Got status code %d",
+			folderID,
+			resp.StatusCode,
+		)
+	}
+
+	defer resp.Body.Close()
+
+	return nil
+}
+
+func fetchBytes(url, apiKey string, bodyType any) error {
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("X-API-Key", apiKey)
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true, // Skip certificate verification
+			},
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	err = json.Unmarshal(body, &bodyType)
+	if err != nil {
+		return fmt.Errorf("error unmarshalling JSON: %w", err)
+	}
+
+	return nil
 }

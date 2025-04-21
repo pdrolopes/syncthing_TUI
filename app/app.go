@@ -1,9 +1,7 @@
 package app
 
 import (
-	"bytes"
 	"crypto/tls"
-	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -97,15 +95,6 @@ const (
 	RESCAN_ALL_MARK               = "rescan-all"
 	ADD_FOLDER_MARK               = "add-folder"
 	DEFAULT_SYNCTHING_URL         = "http://localhost:8384"
-
-	// Syncthing rest paths
-	CONFIG                  = "/rest/config"
-	CONFIG_DEVICES          = "/rest/config/devices"
-	DB_COMPLETION_PATH      = "/rest/db/completion"
-	DB_SCAN                 = "/rest/db/scan"
-	DB_REVERT               = "/rest/db/revert"
-	CLUSTER_PENDING_DEVICES = "/rest/cluster/pending/devices"
-	CLUSTER_PENDING_FOLDERS = "/rest/cluster/pending/folders"
 )
 
 var VERSION = "unknown"
@@ -490,27 +479,21 @@ func handleMouseLeftClick(m model, msg tea.MouseMsg) (model, tea.Cmd) {
 	}
 
 	if zone.Get(PAUSE_ALL_MARK).InBounds(msg) && !m.ongoingUserAction {
-		pausedFolders := lo.Map(
-			m.config.Folders,
-			func(item syncthing.FolderConfig, index int) syncthing.FolderConfig {
-				item.Paused = true
-				return item
-			},
-		)
+		cmds := make([]tea.Cmd, 0, len(m.config.Folders))
+		for _, f := range m.config.Folders {
+			cmds = append(cmds, updateFolderPause(m.httpData, f.ID, true))
+		}
 		m.ongoingUserAction = true
-		return m, putFolder(m.httpData, pausedFolders...)
+		return m, tea.Batch(cmds...)
 	}
 
 	if zone.Get(RESUME_ALL_MARK).InBounds(msg) {
-		resumedFolders := lo.Map(
-			m.config.Folders,
-			func(item syncthing.FolderConfig, index int) syncthing.FolderConfig {
-				item.Paused = false
-				return item
-			},
-		)
+		cmds := make([]tea.Cmd, 0, len(m.config.Folders))
+		for _, f := range m.config.Folders {
+			cmds = append(cmds, updateFolderPause(m.httpData, f.ID, false))
+		}
 		m.ongoingUserAction = true
-		return m, putFolder(m.httpData, resumedFolders...)
+		return m, tea.Batch(cmds...)
 	}
 
 	for _, folder := range m.config.Folders {
@@ -524,9 +507,8 @@ func handleMouseLeftClick(m model, msg tea.MouseMsg) (model, tea.Cmd) {
 		}
 
 		if zone.Get(folder.ID+"/pause").InBounds(msg) && !m.ongoingUserAction {
-			folder.Paused = !folder.Paused
 			m.ongoingUserAction = true
-			return m, putFolder(m.httpData, folder)
+			return m, updateFolderPause(m.httpData, folder.ID, !folder.Paused)
 		}
 
 		if zone.Get(folder.ID + "/rescan").InBounds(msg) {
@@ -1607,65 +1589,4 @@ type GroupedDeviceData struct {
 	prevConnection syncthing.Connection
 	folders        []syncthing.FolderConfig
 	expanded       bool
-}
-
-func fetchBytes(url, apiKey string, bodyType any) error {
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return err
-	}
-
-	req.Header.Set("X-API-Key", apiKey)
-	client := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true, // Skip certificate verification
-			},
-		},
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-
-	err = json.Unmarshal(body, &bodyType)
-	if err != nil {
-		return fmt.Errorf("error unmarshalling JSON: %w", err)
-	}
-
-	return nil
-}
-
-func put(url, apiKey string, body any) error {
-	jsonData, err := json.Marshal(body)
-	if err != nil {
-		return fmt.Errorf("error marshalling JSON: %w", err)
-	}
-	req, err := http.NewRequest(http.MethodPut, url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return err
-	}
-
-	req.Header.Set("X-API-Key", apiKey)
-	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true, // Skip certificate verification
-			},
-		},
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	return nil
 }
