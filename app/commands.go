@@ -2,7 +2,6 @@ package app
 
 import (
 	"bytes"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,24 +14,33 @@ import (
 )
 
 const (
+	CLUSTER_PENDING_DEVICES = "/rest/cluster/pending/devices"
+	CLUSTER_PENDING_FOLDERS = "/rest/cluster/pending/folders"
 	CONFIG                  = "/rest/config"
 	CONFIG_DEVICES          = "/rest/config/devices"
 	CONFIG_FOLDERS          = "/rest/config/folders"
 	DB_COMPLETION_PATH      = "/rest/db/completion"
-	DB_SCAN                 = "/rest/db/scan"
 	DB_REVERT               = "/rest/db/revert"
-	CLUSTER_PENDING_DEVICES = "/rest/cluster/pending/devices"
-	CLUSTER_PENDING_FOLDERS = "/rest/cluster/pending/folders"
+	DB_SCAN                 = "/rest/db/scan"
+	DB_STATUS               = "/rest/db/status"
+	EVENTS                  = "/rest/events"
+	STATS_DEVICE            = "/rest/stats/device"
+	STATS_FOLDER            = "/rest/stats/folder"
+	SYSTEM_CONNECTIONS      = "/rest/system/connections"
+	SYSTEM_STATUS           = "/rest/system/status"
+	SYSTEM_VERSION          = "/rest/system/version"
 )
 
-func fetchFolderStatus(foo HttpData, folderID string) tea.Cmd {
+func fetchFolderStatus(httpData HttpData, folderID string) tea.Cmd {
 	return func() tea.Msg {
 		params := url.Values{}
 		params.Add("folder", folderID)
+		url := httpData.url.JoinPath(DB_STATUS)
+		url.RawQuery = params.Encode()
 		var statusFolder syncthing.FolderStatus
 		err := fetchBytes(
-			"http://localhost:8384/rest/db/status?"+params.Encode(),
-			foo.apiKey,
+			httpData,
+			*url,
 			&statusFolder)
 		if err != nil {
 			return FetchedFolderStatus{err: err}
@@ -53,9 +61,11 @@ func fetchEvents(httpData HttpData, since int) tea.Cmd {
 		params := url.Values{}
 		params.Add("since", fmt.Sprint(since))
 		var events []syncthing.Event[json.RawMessage]
+		url := httpData.url.JoinPath(EVENTS)
+		url.RawQuery = params.Encode()
 		err := fetchBytes(
-			"http://localhost:8384/rest/events?"+params.Encode(),
-			httpData.apiKey,
+			httpData,
+			*url,
 			&events,
 		)
 		if err != nil {
@@ -175,7 +185,7 @@ func fetchEvents(httpData HttpData, since int) tea.Cmd {
 func fetchSystemStatus(httpData HttpData) tea.Cmd {
 	return func() tea.Msg {
 		var status syncthing.SystemStatus
-		err := fetchBytes("http://localhost:8384/rest/system/status", httpData.apiKey, &status)
+		err := fetchBytes(httpData, *httpData.url.JoinPath(SYSTEM_STATUS), &status)
 		if err != nil {
 			return FetchedSystemStatusMsg{err: err}
 		}
@@ -187,7 +197,7 @@ func fetchSystemStatus(httpData HttpData) tea.Cmd {
 func fetchSystemVersion(httpData HttpData) tea.Cmd {
 	return func() tea.Msg {
 		var version syncthing.SystemVersion
-		err := fetchBytes("http://localhost:8384/rest/system/version", httpData.apiKey, &version)
+		err := fetchBytes(httpData, *httpData.url.JoinPath(SYSTEM_VERSION), &version)
 		if err != nil {
 			return FetchedSystemVersionMsg{err: err}
 		}
@@ -196,10 +206,10 @@ func fetchSystemVersion(httpData HttpData) tea.Cmd {
 	}
 }
 
-func fetchSystemConnections(foo HttpData) tea.Cmd {
+func fetchSystemConnections(httpData HttpData) tea.Cmd {
 	return func() tea.Msg {
 		var connections syncthing.SystemConnection
-		err := fetchBytes("http://localhost:8384/rest/system/connections", foo.apiKey, &connections)
+		err := fetchBytes(httpData, *httpData.url.JoinPath(SYSTEM_CONNECTIONS), &connections)
 		if err != nil {
 			return FetchedSystemConnectionsMsg{err: err}
 		}
@@ -208,10 +218,10 @@ func fetchSystemConnections(foo HttpData) tea.Cmd {
 	}
 }
 
-func fetchConfig(foo HttpData) tea.Cmd {
+func fetchConfig(httpData HttpData) tea.Cmd {
 	return func() tea.Msg {
 		var config syncthing.Config
-		err := fetchBytes("http://localhost:8384/rest/config", foo.apiKey, &config)
+		err := fetchBytes(httpData, *httpData.url.JoinPath(CONFIG), &config)
 		if err != nil {
 			return FetchedConfig{err: err}
 		}
@@ -220,10 +230,10 @@ func fetchConfig(foo HttpData) tea.Cmd {
 	}
 }
 
-func fetchFolderStats(foo HttpData) tea.Cmd {
+func fetchFolderStats(httpData HttpData) tea.Cmd {
 	return func() tea.Msg {
 		var folderStats map[string]syncthing.FolderStats
-		err := fetchBytes("http://localhost:8384/rest/stats/folder", foo.apiKey, &folderStats)
+		err := fetchBytes(httpData, *httpData.url.JoinPath(STATS_FOLDER), &folderStats)
 		if err != nil {
 			return FetchedFolderStats{err: err}
 		}
@@ -232,10 +242,10 @@ func fetchFolderStats(foo HttpData) tea.Cmd {
 	}
 }
 
-func fetchDeviceStats(foo HttpData) tea.Cmd {
+func fetchDeviceStats(httpData HttpData) tea.Cmd {
 	return func() tea.Msg {
 		var deviceStats map[string]syncthing.DeviceStats
-		err := fetchBytes("http://localhost:8384/rest/stats/device", foo.apiKey, &deviceStats)
+		err := fetchBytes(httpData, *httpData.url.JoinPath(STATS_DEVICE), &deviceStats)
 		if err != nil {
 			return FetchedDeviceStats{err: err}
 		}
@@ -307,19 +317,19 @@ func fetchCompletion(httpData HttpData, deviceID, folderID string) tea.Cmd {
 	}
 }
 
-func postScan(foo HttpData, folderId string) tea.Cmd {
+func postScan(httpData HttpData, folderId string) tea.Cmd {
 	return func() tea.Msg {
 		params := url.Values{}
 		params.Add("folder", folderId)
-		url := foo.url.JoinPath(DB_SCAN)
+		url := httpData.url.JoinPath(DB_SCAN)
 		url.RawQuery = params.Encode()
 		req, err := http.NewRequest(http.MethodPost, url.String(), nil)
 		if err != nil {
 			return nil
 		}
 
-		req.Header.Set("X-API-Key", foo.apiKey)
-		resp, err := foo.client.Do(req)
+		req.Header.Set("X-API-Key", httpData.apiKey)
+		resp, err := httpData.client.Do(req)
 		if err != nil {
 			return nil
 		}
@@ -525,21 +535,14 @@ func patchFolder(httpData HttpData, folderID string, patchData any) error {
 	return nil
 }
 
-func fetchBytes(url, apiKey string, bodyType any) error {
-	req, err := http.NewRequest("GET", url, nil)
+func fetchBytes(httpData HttpData, url url.URL, bodyType any) error {
+	req, err := http.NewRequest("GET", url.String(), nil)
 	if err != nil {
 		return err
 	}
 
-	req.Header.Set("X-API-Key", apiKey)
-	client := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true, // Skip certificate verification
-			},
-		},
-	}
-	resp, err := client.Do(req)
+	req.Header.Set("X-API-Key", httpData.apiKey)
+	resp, err := httpData.client.Do(req)
 	if err != nil {
 		return err
 	}
