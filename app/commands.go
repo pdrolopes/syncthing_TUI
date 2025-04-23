@@ -46,7 +46,7 @@ func fetchFolderStatus(httpData HttpData, folderID string) tea.Cmd {
 			return FetchedFolderStatus{err: err}
 		}
 
-		return FetchedFolderStatus{folder: statusFolder, id: folderID}
+		return FetchedFolderStatus{folderStatus: statusFolder, id: folderID}
 	}
 }
 
