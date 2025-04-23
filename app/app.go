@@ -42,21 +42,18 @@ type model struct {
 	addDeviceModal                 AddDeviceModel
 	confirmRevertLocalChangesModal ConfirmRevertLocalAdditions
 
-	// test
-	folders []FolderViewModel
+	thisDeviceStatus ThisDeviceStatus
+	folders          []FolderViewModel
 
 	// http data
 	httpData HttpData
 
 	// Syncthing DATA
-	config          syncthing.Config // TODO remove this field
-	pendingDevices  map[string]PendingDevice
-	version         syncthing.SystemVersion
-	status          syncthing.SystemStatus
-	connections     syncthing.SystemConnection
-	prevConnections syncthing.SystemConnection
-	deviceStats     map[string]syncthing.DeviceStats
-	completion      map[string]map[string]syncthing.StatusCompletion
+	config         syncthing.Config // TODO remove this field
+	pendingDevices map[string]PendingDevice
+	version        syncthing.SystemVersion
+	deviceStats    map[string]syncthing.DeviceStats
+	completion     map[string]map[string]syncthing.StatusCompletion
 }
 
 type FolderViewModel struct {
@@ -64,6 +61,16 @@ type FolderViewModel struct {
 	Status       syncthing.FolderStatus
 	ExtraStats   syncthing.FolderStats
 	ScanProgress syncthing.FolderScanProgressEventData
+}
+
+type ThisDeviceStatus struct {
+	ID                     string
+	Name                   string
+	InGoingBytesPerSecond  int64
+	OutGoingBytesPerSecond int64
+	InBytesTotal           int64
+	OutBytesTotal          int64
+	UpTime                 int64
 }
 
 type PendingDevice struct {
@@ -154,7 +161,7 @@ func NewModel() model {
 
 func (m model) Init() tea.Cmd {
 	return tea.Batch(
-		fetchSystemConnections(m.httpData),
+		fetchSystemConnections(m.httpData, syncthing.SystemConnection{}),
 		fetchSystemStatus(m.httpData),
 		fetchSystemVersion(m.httpData),
 		fetchConfig(m.httpData),
@@ -195,8 +202,9 @@ type FetchedSystemVersionMsg struct {
 }
 
 type FetchedSystemConnectionsMsg struct {
-	connections syncthing.SystemConnection
-	err         error
+	prevConnections syncthing.SystemConnection
+	connections     syncthing.SystemConnection
+	err             error
 }
 
 type FetchedConfig struct {
@@ -352,7 +360,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 			return m, nil
 		}
-		m.status = msg.status
+		m.thisDeviceStatus.ID = msg.status.MyID
+		m.thisDeviceStatus.UpTime = msg.status.Uptime
+		m.thisDeviceStatus.Name = thisDeviceName(msg.status.MyID, m.config.Devices)
 		return m, nil
 	case FetchedSystemVersionMsg:
 		if msg.err != nil {
@@ -369,9 +379,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		m.prevConnections = m.connections
-		m.connections = msg.connections
-		return m, nil
+		m.thisDeviceStatus.InBytesTotal = msg.connections.Total.InBytesTotal
+		m.thisDeviceStatus.OutBytesTotal = msg.prevConnections.Total.OutBytesTotal
+		m.thisDeviceStatus.InGoingBytesPerSecond = byteThroughputInSeconds(
+			TotalBytes{
+				at:    msg.prevConnections.Total.At,
+				bytes: msg.prevConnections.Total.InBytesTotal,
+			},
+			TotalBytes{
+				at:    msg.connections.Total.At,
+				bytes: msg.connections.Total.InBytesTotal,
+			},
+		)
+
+		m.thisDeviceStatus.OutGoingBytesPerSecond = byteThroughputInSeconds(
+			TotalBytes{
+				at:    msg.prevConnections.Total.At,
+				bytes: msg.prevConnections.Total.OutBytesTotal,
+			},
+			TotalBytes{
+				at:    msg.connections.Total.At,
+				bytes: msg.connections.Total.OutBytesTotal,
+			},
+		)
+
+		return m, wait(REFETCH_STATUS_INTERVAL, fetchSystemConnections(m.httpData, msg.connections))
 	case FetchedFolderStats:
 		if msg.err != nil {
 			// TODO create system status error ux
@@ -383,8 +415,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case TickedRefetchStatusMsg:
 		cmds := tea.Batch(
-			fetchSystemConnections(m.httpData),
-			fetchSystemStatus(m.httpData),
+			fetchSystemStatus(m.httpData), // TODO remove this
 			tea.Tick(REFETCH_STATUS_INTERVAL, func(time.Time) tea.Msg { return TickedRefetchStatusMsg{} }),
 		)
 		return m, cmds
@@ -654,8 +685,6 @@ func (m model) View() string {
 		func(device syncthing.DeviceConfig, index int) GroupedDeviceData {
 			completion, hasCompletion := m.completion[device.DeviceID]
 			stats, hasStats := m.deviceStats[device.DeviceID]
-			connection, hasConnection := m.connections.Connections[device.DeviceID]
-			prevConnection := m.prevConnections.Connections[device.DeviceID]
 			folders := lo.Filter(
 				m.config.Folders,
 				func(folder syncthing.FolderConfig, index int) bool {
@@ -669,16 +698,14 @@ func (m model) View() string {
 			)
 			_, expanded := m.expandedFields[device.DeviceID]
 			return GroupedDeviceData{
-				config:         device,
-				completion:     completion,
-				hasCompletion:  hasCompletion,
-				stats:          stats,
-				hasStats:       hasStats,
-				connection:     connection,
-				hasConnection:  hasConnection,
-				prevConnection: prevConnection,
-				folders:        folders,
-				expanded:       expanded,
+				config:        device,
+				completion:    completion,
+				hasCompletion: hasCompletion,
+				stats:         stats,
+				hasStats:      hasStats,
+				hasConnection: false,
+				folders:       folders,
+				expanded:      expanded,
 			}
 		},
 	)
@@ -690,18 +717,12 @@ func (m model) View() string {
 		lipgloss.JoinVertical(lipgloss.Center,
 			viewPendingDevices(pendingDevices),
 			lipgloss.JoinHorizontal(lipgloss.Top,
-				viewFolders(m.folders, m.config.Devices, m.status.MyID, m.expandedFields),
+				viewFolders(m.folders, m.config.Devices, m.thisDeviceStatus.ID, m.expandedFields),
 				lipgloss.JoinVertical(lipgloss.Left,
 					viewStatus(
-						m.status,
-						m.connections,
-						m.prevConnections,
-						lo.Map(
-							m.folders,
-							func(i FolderViewModel, _ int) syncthing.FolderStatus { return i.Status },
-						),
+						m.thisDeviceStatus,
+						m.folders,
 						m.version,
-						thisDeviceName(m.status.MyID, m.config.Devices),
 						m.config.Options,
 					),
 
@@ -863,12 +884,9 @@ func viewPendingDevices(pendingDevices []PendingDevice) string {
 }
 
 func viewStatus(
-	status syncthing.SystemStatus,
-	connections syncthing.SystemConnection,
-	prevConnections syncthing.SystemConnection,
-	folders []syncthing.FolderStatus,
+	this ThisDeviceStatus,
+	folders []FolderViewModel,
 	version syncthing.SystemVersion,
-	thisDeviceName string,
 	options syncthing.Options,
 ) string {
 	foo := lipgloss.NewStyle().
@@ -876,41 +894,21 @@ func viewStatus(
 		PaddingRight(1).
 		PaddingLeft(1).
 		Width(50)
-	totalFiles := lo.SumBy(folders, func(f syncthing.FolderStatus) int { return f.LocalFiles })
-	totalDirectories := lo.SumBy(
-		folders,
-		func(f syncthing.FolderStatus) int { return f.LocalDirectories },
-	)
-	totalBytes := lo.SumBy(folders, func(f syncthing.FolderStatus) int64 { return f.LocalBytes })
 
-	inBytesPerSecond := byteThroughputInSeconds(
-		TotalBytes{
-			bytes: prevConnections.Total.InBytesTotal,
-			at:    prevConnections.Total.At,
-		},
-		TotalBytes{
-			bytes: connections.Total.InBytesTotal,
-			at:    connections.Total.At,
-		},
-	)
-	outBytesPerSecond := byteThroughputInSeconds(
-		TotalBytes{
-			bytes: prevConnections.Total.OutBytesTotal,
-			at:    prevConnections.Total.At,
-		},
-		TotalBytes{
-			bytes: connections.Total.OutBytesTotal,
-			at:    connections.Total.At,
-		},
-	)
+	var totalFiles, totalDirectories, totalBytes int64
+	for _, f := range folders {
+		totalFiles += int64(f.Status.LocalFiles)
+		totalDirectories += int64(f.Status.LocalDirectories)
+		totalBytes += f.Status.LocalBytes
+	}
 	italicStyle := lipgloss.NewStyle().Italic(true).Render
 
 	t := spaceAroundTable().
 		Row(
 			"Download rate",
 			fmt.Sprintf("%s/s (%s)",
-				humanize.IBytes(uint64(inBytesPerSecond)),
-				humanize.IBytes(uint64(connections.Total.InBytesTotal)),
+				humanize.IBytes(uint64(this.InGoingBytesPerSecond)),
+				humanize.IBytes(uint64(this.InBytesTotal)),
 			),
 		)
 
@@ -922,8 +920,8 @@ func viewStatus(
 
 	t = t.Row("Upload rate",
 		fmt.Sprintf("%s/s (%s)",
-			humanize.IBytes(uint64(outBytesPerSecond)),
-			humanize.IBytes(uint64(connections.Total.OutBytesTotal)),
+			humanize.IBytes(uint64(this.OutGoingBytesPerSecond)),
+			humanize.IBytes(uint64(this.OutBytesTotal)),
 		),
 	)
 
@@ -940,11 +938,11 @@ func viewStatus(
 			totalDirectories,
 			humanize.IBytes(uint64(totalBytes))),
 	).
-		Row("Uptime", HumanizeDuration(status.Uptime)).
+		Row("Uptime", HumanizeDuration(this.UpTime)).
 		Row("Syncthing Version", fmt.Sprintf("%s, %s (%s)", version.Version, osName(version.OS), archName(version.Arch))).
 		Row("Version", VERSION)
 
-	header := lipgloss.NewStyle().PaddingBottom(1).Bold(true).Render(thisDeviceName)
+	header := lipgloss.NewStyle().PaddingBottom(1).Bold(true).Render(this.Name)
 	return foo.Render(
 		lipgloss.JoinVertical(
 			lipgloss.Left,

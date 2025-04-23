@@ -206,7 +206,7 @@ func fetchSystemVersion(httpData HttpData) tea.Cmd {
 	}
 }
 
-func fetchSystemConnections(httpData HttpData) tea.Cmd {
+func fetchSystemConnections(httpData HttpData, prevConnections syncthing.SystemConnection) tea.Cmd {
 	return func() tea.Msg {
 		var connections syncthing.SystemConnection
 		err := fetchBytes(httpData, *httpData.url.JoinPath(SYSTEM_CONNECTIONS), &connections)
@@ -214,7 +214,10 @@ func fetchSystemConnections(httpData HttpData) tea.Cmd {
 			return FetchedSystemConnectionsMsg{err: err}
 		}
 
-		return FetchedSystemConnectionsMsg{connections: connections}
+		return FetchedSystemConnectionsMsg{
+			connections:     connections,
+			prevConnections: prevConnections,
+		}
 	}
 }
 
