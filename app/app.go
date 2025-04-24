@@ -36,18 +36,17 @@ type model struct {
 	err                            error
 	width                          int
 	height                         int
+	httpData                       HttpData
 	expandedFields                 map[string]struct{}
 	ongoingUserAction              bool
 	currentTime                    time.Time
 	addDeviceModal                 AddDeviceModel
 	confirmRevertLocalChangesModal ConfirmRevertLocalAdditions
+	putConfig                      PutConfig
 
 	thisDeviceStatus ThisDeviceStatus
 	folders          []FolderViewModel
 	devices          []DeviceViewModel
-
-	// http data
-	httpData HttpData
 
 	// Syncthing DATA
 	configDefaults syncthing.Defaults
@@ -317,6 +316,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case syncthing.FolderSummaryEventData:
 				m.folders = updateFolderStatus(m.folders, lo.T2(data.Folder, data.Summary))
 			case syncthing.Config:
+				m.putConfig = createPutConfig(data)
 				m.folders = updateFolderViewModelConfigs(data, m.folders, m.thisDeviceStatus.ID)
 				m.devices = updateDeviceViewModelConfigs(data, m.devices, m.thisDeviceStatus.ID)
 			case syncthing.FolderScanProgressEventData:
@@ -428,6 +428,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		m.putConfig = createPutConfig(msg.config)
 		m.folders = updateFolderViewModelConfigs(msg.config, m.folders, m.thisDeviceStatus.ID)
 		m.devices = updateDeviceViewModelConfigs(msg.config, m.devices, m.thisDeviceStatus.ID)
 		m.thisDeviceStatus.Name = thisDeviceName(m.thisDeviceStatus.ID, m.devices)
@@ -732,17 +733,20 @@ func handleMouseLeftClick(m model, msg tea.MouseMsg) (model, tea.Cmd) {
 		}
 
 		if zone.Get(pendingDeviceID + "/ignore").InBounds(msg) {
-			panic("aaa")
-			// m.config.RemoteIgnoredDevices = append(
-			// 	m.config.RemoteIgnoredDevices,
-			// 	syncthing.RemoteIgnoredDevice{
-			// 		DeviceID: pendingDeviceID,
-			// 		Name:     m.pendingDevices[pendingDeviceID].Name,
-			// 		Address:  m.pendingDevices[pendingDeviceID].Address,
-			// 		Time:     m.currentTime,
-			// 	},
-			// )
-			// return m, putConfig(m.httpData, m.config)
+
+			cmd := m.putConfig(m.httpData, func(oldConfig syncthing.Config) syncthing.Config {
+				oldConfig.RemoteIgnoredDevices = append(
+					oldConfig.RemoteIgnoredDevices,
+					syncthing.RemoteIgnoredDevice{
+						DeviceID: pendingDeviceID,
+						Name:     m.pendingDevices[pendingDeviceID].Name,
+						Address:  m.pendingDevices[pendingDeviceID].Address,
+						Time:     m.currentTime,
+					},
+				)
+				return oldConfig
+			})
+			return m, cmd
 		}
 
 		if zone.Get(pendingDeviceID + "/add-device").InBounds(msg) {

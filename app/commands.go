@@ -382,28 +382,40 @@ func PostDeviceConfig(httpData HttpData, device syncthing.DeviceConfig) tea.Cmd 
 	}
 }
 
-func putConfig(httpData HttpData, config syncthing.Config) tea.Cmd {
-	return func() tea.Msg {
-		jsonData, err := json.Marshal(config)
-		if err != nil {
-			return fmt.Errorf("error marshalling JSON: %w", err)
-		}
+type (
+	ChangeConfig func(config syncthing.Config) syncthing.Config
+	PutConfig    func(httpData HttpData, foo ChangeConfig) tea.Cmd
+)
 
-		url := httpData.url.JoinPath(CONFIG)
-		req, err := http.NewRequest(http.MethodPut, url.String(), bytes.NewBuffer(jsonData))
-		if err != nil {
-			return err
-		}
+/*
+The /rest/config endpoint doesnt support a PATCH request to update a single field.
+This was created so that we can PUT a change to a config without saving the syncthing.Config in the state.
+We only save the PutConfig function that has config closured
+*/
+func createPutConfig(config syncthing.Config) PutConfig {
+	return func(httpData HttpData, updateConfig ChangeConfig) tea.Cmd {
+		return func() tea.Msg {
+			jsonData, err := json.Marshal(updateConfig(config))
+			if err != nil {
+				return fmt.Errorf("error marshalling JSON: %w", err)
+			}
 
-		req.Header.Set("X-API-Key", httpData.apiKey)
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := httpData.client.Do(req)
-		if err != nil {
-			return err
-		}
-		defer resp.Body.Close()
+			url := httpData.url.JoinPath(CONFIG)
+			req, err := http.NewRequest(http.MethodPut, url.String(), bytes.NewBuffer(jsonData))
+			if err != nil {
+				return err
+			}
 
-		return nil
+			req.Header.Set("X-API-Key", httpData.apiKey)
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := httpData.client.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+
+			return nil
+		}
 	}
 }
 
