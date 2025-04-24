@@ -50,16 +50,17 @@ type model struct {
 	httpData HttpData
 
 	// Syncthing DATA
-	config         syncthing.Config // TODO remove this field
+	configDefaults syncthing.Defaults
 	pendingDevices map[string]PendingDevice
 	version        syncthing.SystemVersion
 }
 
 type FolderViewModel struct {
-	Config       syncthing.FolderConfig
-	Status       syncthing.FolderStatus
-	ExtraStats   syncthing.FolderStats
-	ScanProgress syncthing.FolderScanProgressEventData
+	Config        syncthing.FolderConfig
+	Status        syncthing.FolderStatus
+	ExtraStats    syncthing.FolderStats
+	ScanProgress  syncthing.FolderScanProgressEventData
+	SharedDevices []string
 }
 
 type DeviceViewModel struct {
@@ -80,6 +81,8 @@ type ThisDeviceStatus struct {
 	InBytesTotal           int64
 	OutBytesTotal          int64
 	UpTime                 int64
+	MaxSendKbps            int
+	MaxRecvKbps            int
 }
 
 type PendingDevice struct {
@@ -295,7 +298,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			// TODO figure out what to do if event errors
 			m.err = msg.err
-			return m, wait(10*time.Second, fetchEvents(m.httpData, msg.since))
+			return m, wait(time.Second, fetchEvents(m.httpData, msg.since))
 		}
 
 		since := 0
@@ -314,9 +317,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case syncthing.FolderSummaryEventData:
 				m.folders = updateFolderStatus(m.folders, lo.T2(data.Folder, data.Summary))
 			case syncthing.Config:
-				m.folders = updateFolderViewModelConfigs(data, m.folders)
+				m.folders = updateFolderViewModelConfigs(data, m.folders, m.thisDeviceStatus.ID)
 				m.devices = updateDeviceViewModelConfigs(data, m.devices, m.thisDeviceStatus.ID)
-				m.config = data
 			case syncthing.FolderScanProgressEventData:
 				m.folders = updateFolderScan(m.folders, data)
 			case syncthing.StateChangedEventData:
@@ -365,7 +367,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.thisDeviceStatus.ID = msg.status.MyID
 		m.thisDeviceStatus.UpTime = msg.status.Uptime
-		m.thisDeviceStatus.Name = thisDeviceName(msg.status.MyID, m.config.Devices)
+		m.thisDeviceStatus.Name = thisDeviceName(msg.status.MyID, m.devices)
 		return m, wait(REFETCH_STATUS_INTERVAL, fetchSystemStatus(m.httpData))
 	case FetchedSystemVersionMsg:
 		if msg.err != nil {
@@ -417,7 +419,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 			return m, nil
 		}
-		m.config = msg.config
 		cmds := make([]tea.Cmd, 0)
 		for _, f := range msg.config.Folders {
 			cmds = append(cmds, fetchFolderStatus(m.httpData, f.ID))
@@ -427,8 +428,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		m.folders = updateFolderViewModelConfigs(msg.config, m.folders)
+		m.folders = updateFolderViewModelConfigs(msg.config, m.folders, m.thisDeviceStatus.ID)
 		m.devices = updateDeviceViewModelConfigs(msg.config, m.devices, m.thisDeviceStatus.ID)
+		m.thisDeviceStatus.Name = thisDeviceName(m.thisDeviceStatus.ID, m.devices)
+		m.thisDeviceStatus.MaxSendKbps = msg.config.Options.MaxSendKbps
+		m.thisDeviceStatus.MaxRecvKbps = msg.config.Options.MaxRecvKbps
 
 		return m, tea.Batch(cmds...)
 	case FetchedFolderStatus:
@@ -494,6 +498,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func updateFolderViewModelConfigs(
 	config syncthing.Config,
 	current []FolderViewModel,
+	thisDeviceID string,
 ) []FolderViewModel {
 	newFolderViewModelList := lo.Map(
 		config.Folders,
@@ -502,11 +507,29 @@ func updateFolderViewModelConfigs(
 				current,
 				func(fvm FolderViewModel) bool { return folderConfig.ID == fvm.Config.ID },
 			)
+
+			sharedDevices := lo.FilterMap(
+				folderConfig.Devices,
+				func(device syncthing.FolderDevice, index int) (string, bool) {
+					if device.DeviceID == thisDeviceID {
+						return "", false
+					}
+
+					for _, d := range config.Devices {
+						if d.DeviceID == device.DeviceID {
+							return d.Name, true
+						}
+					}
+					return "", false
+				},
+			)
+
 			if found {
 				currentFVM.Config = folderConfig
+				currentFVM.SharedDevices = sharedDevices
 				return currentFVM
 			} else {
-				return FolderViewModel{Config: folderConfig}
+				return FolderViewModel{Config: folderConfig, SharedDevices: sharedDevices}
 			}
 		},
 	)
@@ -531,15 +554,21 @@ func updateDeviceViewModelConfigs(
 				func(fvm DeviceViewModel) bool { return deviceConfig.DeviceID == fvm.Config.DeviceID },
 			)
 
-			folders := lo.FilterMap(config.Folders, func(folderConfig syncthing.FolderConfig, index int) (lo.Tuple2[string, string], bool) {
-				foo := lo.SomeBy(folderConfig.Devices, func(item syncthing.FolderDevice) bool { return item.DeviceID == deviceConfig.DeviceID })
+			folders := lo.FilterMap(
+				config.Folders,
+				func(folderConfig syncthing.FolderConfig, index int) (lo.Tuple2[string, string], bool) {
+					foo := lo.SomeBy(
+						folderConfig.Devices,
+						func(item syncthing.FolderDevice) bool { return item.DeviceID == deviceConfig.DeviceID },
+					)
 
-				if foo {
-					return lo.T2(folderConfig.ID, folderConfig.Label), true
-				} else {
-					return lo.T2("", ""), false
-				}
-			})
+					if foo {
+						return lo.T2(folderConfig.ID, folderConfig.Label), true
+					} else {
+						return lo.T2("", ""), false
+					}
+				},
+			)
 
 			if found {
 				currentDVM.Config = deviceConfig
@@ -632,68 +661,67 @@ func updateDeviceStatusCompletion(
 	}
 
 	device.StatusCompletion[folderID] = statusCompletion
-	return
 }
 
 func handleMouseLeftClick(m model, msg tea.MouseMsg) (model, tea.Cmd) {
 	if zone.Get(RESCAN_ALL_MARK).InBounds(msg) {
-		cmds := make([]tea.Cmd, 0, len(m.config.Folders))
-		for _, f := range m.config.Folders {
-			cmds = append(cmds, postScan(m.httpData, f.ID))
+		cmds := make([]tea.Cmd, 0, len(m.folders))
+		for _, f := range m.folders {
+			cmds = append(cmds, postScan(m.httpData, f.Config.ID))
 		}
 		return m, tea.Batch(cmds...)
 	}
 
 	if zone.Get(PAUSE_ALL_MARK).InBounds(msg) && !m.ongoingUserAction {
-		cmds := make([]tea.Cmd, 0, len(m.config.Folders))
-		for _, f := range m.config.Folders {
-			cmds = append(cmds, updateFolderPause(m.httpData, f.ID, true))
+		cmds := make([]tea.Cmd, 0, len(m.folders))
+		for _, f := range m.folders {
+			cmds = append(cmds, updateFolderPause(m.httpData, f.Config.ID, true))
 		}
 		m.ongoingUserAction = true
 		return m, tea.Batch(cmds...)
 	}
 
 	if zone.Get(RESUME_ALL_MARK).InBounds(msg) {
-		cmds := make([]tea.Cmd, 0, len(m.config.Folders))
-		for _, f := range m.config.Folders {
-			cmds = append(cmds, updateFolderPause(m.httpData, f.ID, false))
+		cmds := make([]tea.Cmd, 0, len(m.folders))
+		for _, f := range m.folders {
+			cmds = append(cmds, updateFolderPause(m.httpData, f.Config.ID, false))
 		}
 		m.ongoingUserAction = true
 		return m, tea.Batch(cmds...)
 	}
 
-	for _, folder := range m.config.Folders {
-		if zone.Get(folder.ID).InBounds(msg) {
-			if _, exists := m.expandedFields[folder.ID]; exists {
-				delete(m.expandedFields, folder.ID)
+	for _, folder := range m.folders {
+		if zone.Get(folder.Config.ID).InBounds(msg) {
+			if _, exists := m.expandedFields[folder.Config.ID]; exists {
+				delete(m.expandedFields, folder.Config.ID)
 			} else {
-				m.expandedFields[folder.ID] = struct{}{}
+				m.expandedFields[folder.Config.ID] = struct{}{}
 			}
 			return m, nil
 		}
 
-		if zone.Get(folder.ID+"/pause").InBounds(msg) && !m.ongoingUserAction {
+		if zone.Get(folder.Config.ID+"/pause").InBounds(msg) && !m.ongoingUserAction {
 			m.ongoingUserAction = true
-			return m, updateFolderPause(m.httpData, folder.ID, !folder.Paused)
+			return m, updateFolderPause(m.httpData, folder.Config.ID, !folder.Config.Paused)
 		}
 
-		if zone.Get(folder.ID + "/rescan").InBounds(msg) {
-			return m, postScan(m.httpData, folder.ID)
+		if zone.Get(folder.Config.ID + "/rescan").InBounds(msg) {
+			return m, postScan(m.httpData, folder.Config.ID)
 		}
 
-		if zone.Get(folder.ID + "/revert-local-additions").InBounds(msg) {
+		if zone.Get(folder.Config.ID + "/revert-local-additions").InBounds(msg) {
 			m.confirmRevertLocalChangesModal.Show = true
-			m.confirmRevertLocalChangesModal.folderID = folder.ID
+			m.confirmRevertLocalChangesModal.folderID = folder.Config.ID
 			return m, nil
 		}
 	}
 
-	for _, device := range m.config.Devices {
-		if zone.Get(device.DeviceID).InBounds(msg) {
-			if _, exists := m.expandedFields[device.DeviceID]; exists {
-				delete(m.expandedFields, device.DeviceID)
+	for _, device := range m.devices {
+		if zone.Get(device.Config.DeviceID).InBounds(msg) {
+			if _, exists := m.expandedFields[device.Config.DeviceID]; exists {
+				delete(m.expandedFields, device.Config.DeviceID)
 			} else {
-				m.expandedFields[device.DeviceID] = struct{}{}
+				m.expandedFields[device.Config.DeviceID] = struct{}{}
 			}
 			return m, nil
 		}
@@ -704,24 +732,24 @@ func handleMouseLeftClick(m model, msg tea.MouseMsg) (model, tea.Cmd) {
 		}
 
 		if zone.Get(pendingDeviceID + "/ignore").InBounds(msg) {
-
-			m.config.RemoteIgnoredDevices = append(
-				m.config.RemoteIgnoredDevices,
-				syncthing.RemoteIgnoredDevice{
-					DeviceID: pendingDeviceID,
-					Name:     m.pendingDevices[pendingDeviceID].Name,
-					Address:  m.pendingDevices[pendingDeviceID].Address,
-					Time:     m.currentTime,
-				},
-			)
-			return m, putConfig(m.httpData, m.config)
+			panic("aaa")
+			// m.config.RemoteIgnoredDevices = append(
+			// 	m.config.RemoteIgnoredDevices,
+			// 	syncthing.RemoteIgnoredDevice{
+			// 		DeviceID: pendingDeviceID,
+			// 		Name:     m.pendingDevices[pendingDeviceID].Name,
+			// 		Address:  m.pendingDevices[pendingDeviceID].Address,
+			// 		Time:     m.currentTime,
+			// 	},
+			// )
+			// return m, putConfig(m.httpData, m.config)
 		}
 
 		if zone.Get(pendingDeviceID + "/add-device").InBounds(msg) {
 			m.addDeviceModal = NewPendingDevice(
 				m.pendingDevices[pendingDeviceID].Name,
 				pendingDeviceID,
-				m.config.Defaults.Device,
+				m.configDefaults.Device,
 				m.httpData)
 			cmd := m.addDeviceModal.Init()
 
@@ -750,13 +778,12 @@ func (m model) View() string {
 		lipgloss.JoinVertical(lipgloss.Center,
 			viewPendingDevices(pendingDevices),
 			lipgloss.JoinHorizontal(lipgloss.Top,
-				viewFolders(m.folders, m.config.Devices, m.thisDeviceStatus.ID, m.expandedFields),
+				viewFolders(m.folders, m.expandedFields),
 				lipgloss.JoinVertical(lipgloss.Left,
 					viewStatus(
 						m.thisDeviceStatus,
 						m.folders,
 						m.version,
-						m.config.Options,
 					),
 
 					viewDevices(m.devices, m.currentTime),
@@ -920,7 +947,6 @@ func viewStatus(
 	this ThisDeviceStatus,
 	folders []FolderViewModel,
 	version syncthing.SystemVersion,
-	options syncthing.Options,
 ) string {
 	foo := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -945,10 +971,10 @@ func viewStatus(
 			),
 		)
 
-	if options.MaxSendKbps > 0 {
+	if this.MaxSendKbps > 0 {
 		t = t.Row("",
 			italicStyle(fmt.Sprintf("Limit: %s/s",
-				humanize.IBytes(uint64(options.MaxSendKbps)*humanize.KiByte))))
+				humanize.IBytes(uint64(this.MaxSendKbps)*humanize.KiByte))))
 	}
 
 	t = t.Row("Upload rate",
@@ -958,11 +984,11 @@ func viewStatus(
 		),
 	)
 
-	if options.MaxRecvKbps > 0 {
+	if this.MaxRecvKbps > 0 {
 		t = t.Row("",
 			italicStyle(
 				fmt.Sprintf("Limit: %s/s",
-					humanize.IBytes(uint64(options.MaxRecvKbps)*humanize.KiByte))))
+					humanize.IBytes(uint64(this.MaxRecvKbps)*humanize.KiByte))))
 	}
 
 	t = t.Row("Local State (Total)",
@@ -987,13 +1013,11 @@ func viewStatus(
 
 func viewFolders(
 	folders []FolderViewModel,
-	devices []syncthing.DeviceConfig,
-	myID string,
 	expandedFolder map[string]struct{},
 ) string {
 	views := lo.Map(folders, func(item FolderViewModel, index int) string {
 		_, isExpanded := expandedFolder[item.Config.ID]
-		return viewFolder(item, devices, myID, isExpanded)
+		return viewFolder(item, isExpanded)
 	})
 
 	btns := make([]string, 0)
@@ -1037,8 +1061,6 @@ func spaceAroundTable() *table.Table {
 
 func viewFolder(
 	folder FolderViewModel,
-	devices []syncthing.DeviceConfig,
-	myID string,
 	expanded bool,
 ) string {
 	status := folderStatus(folder)
@@ -1083,21 +1105,6 @@ func viewFolder(
 	verticalViews = append(verticalViews, zone.Mark(folder.Config.ID, header.Render()))
 	if expanded {
 		foo := lo.Ternary(folder.Config.FsWatcherEnabled, "Enabled", "Disabled")
-
-		sharedDevices := lo.FilterMap(
-			folder.Config.Devices,
-			func(sharedDevice syncthing.FolderDevice, index int) (string, bool) {
-				if sharedDevice.DeviceID == myID {
-					// folder devices includes the host device. we want to ignore our device
-					return "", false
-				}
-				d, found := lo.Find(devices, func(d syncthing.DeviceConfig) bool {
-					return d.DeviceID == sharedDevice.DeviceID
-				})
-
-				return d.Name, found
-			},
-		)
 
 		var folderType string
 		switch folder.Config.Type {
@@ -1169,7 +1176,7 @@ func viewFolder(
 			),
 			lo.T2("File Pull Order", fmt.Sprint(folder.Config.Order)),
 			lo.T2("File Versioning", fmt.Sprint(folder.Config.Versioning.Type)),
-			lo.T2("Shared With", strings.Join(sharedDevices, ", ")),
+			lo.T2("Shared With", strings.Join(folder.SharedDevices, ", ")),
 			lo.T2("Last Scan", fmt.Sprint(folder.ExtraStats.LastScan)),
 			lo.T2("Last File", fmt.Sprint(folder.ExtraStats.LastFile.Filename)),
 		}
@@ -1248,7 +1255,7 @@ func viewDevice(device DeviceViewModel, currentTime time.Time, expanded bool) st
 		PaddingRight(1).
 		Width(50).
 		BorderForeground(color)
-	groupedCompletion := groupCompletion(lo.Values(device.StatusCompletion)...)
+	groupedCompletion := groupCompletion(device.StatusCompletion)
 
 	containerInnerWidth := container.GetWidth() - container.GetHorizontalPadding()
 	var deviceStatusLabel string
@@ -1323,17 +1330,19 @@ type GroupedCompletion struct {
 	Completion  int
 }
 
-func groupCompletion(arg ...syncthing.StatusCompletion) GroupedCompletion {
-	foo := GroupedCompletion{}
+func groupCompletion(arg map[string]syncthing.StatusCompletion) GroupedCompletion {
+	grouped := GroupedCompletion{}
 	for _, c := range arg {
-		foo.NeedBytes += c.NeedBytes
-		foo.NeedItems += c.NeedItems
-		foo.NeedDeletes += c.NeedDeletes
-		foo.TotalBytes += c.GlobalBytes
+		grouped.NeedBytes += c.NeedBytes
+		grouped.NeedItems += c.NeedItems
+		grouped.NeedDeletes += c.NeedDeletes
+		grouped.TotalBytes += c.GlobalBytes
 	}
-	foo.Completion = int(math.Round(100 * (1.0 - float64(foo.NeedBytes)/float64(foo.TotalBytes))))
+	grouped.Completion = int(
+		math.Round(100 * (1.0 - float64(grouped.NeedBytes)/float64(grouped.TotalBytes))),
+	)
 
-	return foo
+	return grouped
 }
 
 func osName(os string) string {
@@ -1480,7 +1489,7 @@ func deviceStatus(device DeviceViewModel, currentTime time.Time) DeviceStatus {
 	}
 	if device.Connection.B.Connected {
 		insync := lo.Ternary(isUnused, DeviceUnusedInSync, DeviceInSync)
-		groupedCompletion := groupCompletion(lo.Values(device.StatusCompletion)...)
+		groupedCompletion := groupCompletion(device.StatusCompletion)
 		// when all folders are paused. completion doesnt have Completion value.
 		// We also check that there isnt any needs things to assert that device is in sync
 		needsSomething := groupedCompletion.NeedBytes != 0 ||
@@ -1609,10 +1618,10 @@ func folderColor(status FolderStatus) lipgloss.AdaptiveColor {
 	return lipgloss.AdaptiveColor{Light: "", Dark: ""}
 }
 
-func thisDeviceName(myID string, devices []syncthing.DeviceConfig) string {
+func thisDeviceName(myID string, devices []DeviceViewModel) string {
 	for _, device := range devices {
-		if device.DeviceID == myID {
-			return device.Name
+		if device.Config.DeviceID == myID {
+			return device.Config.Name
 		}
 	}
 
