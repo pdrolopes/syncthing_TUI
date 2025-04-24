@@ -168,10 +168,34 @@ type Connection struct {
 	Primary       *Connection `json:"primary"`
 }
 
+func (c Connection) When() time.Time {
+	return c.At
+}
+
+func (c Connection) InBytes() int64 {
+	return c.InBytesTotal
+}
+
+func (c Connection) OutBytes() int64 {
+	return c.OutBytesTotal
+}
+
 type Total struct {
 	At            time.Time `json:"at"`
 	InBytesTotal  int64     `json:"inBytesTotal"`
 	OutBytesTotal int64     `json:"outBytesTotal"`
+}
+
+func (c Total) When() time.Time {
+	return c.At
+}
+
+func (c Total) InBytes() int64 {
+	return c.InBytesTotal
+}
+
+func (c Total) OutBytes() int64 {
+	return c.OutBytesTotal
 }
 
 type Connections map[string]Connection
