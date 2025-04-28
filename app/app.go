@@ -402,7 +402,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.thisDeviceStatus.ID = msg.status.MyID
 		m.thisDeviceStatus.UpTime = msg.status.Uptime
-		m.thisDeviceStatus.Name = thisDeviceName(msg.status.MyID, m.devices)
 		return m, wait(REFETCH_STATUS_INTERVAL, fetchSystemStatus(m.httpData))
 	case FetchedSystemVersionMsg:
 		if msg.err != nil {
@@ -421,12 +420,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.thisDeviceStatus.InBytesTotal = msg.connections.Total.InBytesTotal
 		m.thisDeviceStatus.OutBytesTotal = msg.prevConnections.Total.OutBytesTotal
-		m.thisDeviceStatus.InGoingBytesPerSecond, m.thisDeviceStatus.OutGoingBytesPerSecond = calcInOutBytes(msg.prevConnections.Total, msg.connections.Total)
+		m.thisDeviceStatus.InGoingBytesPerSecond, m.thisDeviceStatus.OutGoingBytesPerSecond = calcInOutBytes(
+			msg.prevConnections.Total,
+			msg.connections.Total,
+		)
 
 		{
 			devices := make([]DeviceViewModel, 0, len(m.devices))
 			for _, device := range m.devices {
-				device.InGoingBytesPerSecond, device.OutGoingBytesPerSecond = calcInOutBytes(msg.prevConnections.Connections[device.Config.DeviceID], msg.connections.Connections[device.Config.DeviceID])
+				device.InGoingBytesPerSecond, device.OutGoingBytesPerSecond = calcInOutBytes(
+					msg.prevConnections.Connections[device.Config.DeviceID],
+					msg.connections.Connections[device.Config.DeviceID])
 				connection, has := msg.connections.Connections[device.Config.DeviceID]
 				device.Connection = lo.T2(has, connection)
 				devices = append(devices, device)
@@ -466,7 +470,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.putConfig = createPutConfig(msg.config)
 		m.folders = updateFolderViewModelConfigs(msg.config, m.folders, m.thisDeviceStatus.ID)
 		m.devices = updateDeviceViewModelConfigs(msg.config, m.devices, m.thisDeviceStatus.ID)
-		m.thisDeviceStatus.Name = thisDeviceName(m.thisDeviceStatus.ID, m.devices)
+		m.thisDeviceStatus.Name = thisDeviceName(m.thisDeviceStatus.ID, msg.config)
 		m.thisDeviceStatus.MaxSendKbps = msg.config.Options.MaxSendKbps
 		m.thisDeviceStatus.MaxRecvKbps = msg.config.Options.MaxRecvKbps
 
@@ -955,7 +959,7 @@ func viewPendingDevices(pendingDevices []PendingDevice) string {
 		header := headerStyle.Render(
 			spaceAroundTable().Width(width-headerStyle.GetHorizontalPadding()).Row(
 				"New Device",
-				p.At.String(),
+				p.At.Format(time.DateTime),
 			).Render(),
 		)
 
@@ -1219,7 +1223,7 @@ func viewFolder(
 			lo.T2("File Pull Order", fmt.Sprint(folder.Config.Order)),
 			lo.T2("File Versioning", fmt.Sprint(folder.Config.Versioning.Type)),
 			lo.T2("Shared With", strings.Join(folder.SharedDevices, ", ")),
-			lo.T2("Last Scan", fmt.Sprint(folder.ExtraStats.LastScan)),
+			lo.T2("Last Scan", fmt.Sprint(folder.ExtraStats.LastScan.Format(time.DateTime))),
 			lo.T2("Last File", fmt.Sprint(folder.ExtraStats.LastFile.Filename)),
 		}
 
@@ -1306,7 +1310,7 @@ func viewDevice(device DeviceViewModel, currentTime time.Time, expanded bool) st
 	var deviceStatusLabel string
 	if groupedCompletion.Completion != 100 && status == DeviceSyncing {
 		deviceStatusLabel = fmt.Sprintf(
-			"%s (%d%%, %s)",
+			"%s (%0.f%%, %s)",
 			deviceLabel(status),
 			groupedCompletion.Completion,
 			humanize.IBytes(uint64(groupedCompletion.NeedBytes)))
@@ -1353,8 +1357,18 @@ func viewDevice(device DeviceViewModel, currentTime time.Time, expanded bool) st
 		}
 	} else {
 		table.
-			Row("Last Seen", device.ExtraStats.LastSeen.String()).
-			Row("Sync Status", device.ExtraStats.LastSeen.String())
+			Row("Last Seen", device.ExtraStats.LastSeen.Format(time.DateTime))
+
+		if groupedCompletion.NeedBytes > 0 {
+			table.Row("Sync Status", fmt.Sprintf("%0.f%%", groupedCompletion.Completion))
+			table.Row("Out of Sync Items",
+				fmt.Sprintf("%d items, ~%s",
+					groupedCompletion.NeedItems,
+					humanize.IBytes(uint64(groupedCompletion.NeedBytes))))
+		} else {
+			table.Row("Sync Status", "Up to Date")
+		}
+
 	}
 	table.Row("Address", device.Connection.B.Address).
 		Row("Compresson", device.Config.Compression).
@@ -1372,7 +1386,7 @@ type GroupedCompletion struct {
 	NeedBytes   int64
 	NeedItems   int
 	NeedDeletes int
-	Completion  int
+	Completion  float64
 }
 
 func groupCompletion(arg map[string]syncthing.StatusCompletion) GroupedCompletion {
@@ -1383,8 +1397,8 @@ func groupCompletion(arg map[string]syncthing.StatusCompletion) GroupedCompletio
 		grouped.NeedDeletes += c.NeedDeletes
 		grouped.TotalBytes += c.GlobalBytes
 	}
-	grouped.Completion = int(
-		math.Round(100 * (1.0 - float64(grouped.NeedBytes)/float64(grouped.TotalBytes))),
+	grouped.Completion = math.Floor(
+		100 * (1.0 - float64(grouped.NeedBytes)/float64(grouped.TotalBytes)),
 	)
 
 	return grouped
@@ -1663,10 +1677,10 @@ func folderColor(status FolderStatus) lipgloss.AdaptiveColor {
 	return lipgloss.AdaptiveColor{Light: "", Dark: ""}
 }
 
-func thisDeviceName(myID string, devices []DeviceViewModel) string {
-	for _, device := range devices {
-		if device.Config.DeviceID == myID {
-			return device.Config.Name
+func thisDeviceName(myID string, config syncthing.Config) string {
+	for _, device := range config.Devices {
+		if device.DeviceID == myID {
+			return device.Name
 		}
 	}
 
