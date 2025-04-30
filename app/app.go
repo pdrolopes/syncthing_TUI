@@ -38,8 +38,6 @@ const (
 	REVERT_LOCAL_CHANGES_CANCEL_BTN  = "cancel-revert-local-changes"
 )
 
-var VERSION = "unknown"
-
 type errMsg error
 
 // # Useful links
@@ -51,6 +49,7 @@ type model struct {
 	dump                           io.Writer
 	err                            error
 	width                          int
+	appVersion                     string
 	height                         int
 	httpData                       HttpData
 	expandedFields                 map[string]struct{}
@@ -162,7 +161,7 @@ var quitKeys = key.NewBinding(
 	key.WithHelp("", "press q to quit"),
 )
 
-func NewModel() model {
+func NewModel(appVersion string) model {
 	var dump *os.File
 	if _, ok := os.LookupEnv("DEBUG"); ok {
 		var err error
@@ -197,6 +196,7 @@ func NewModel() model {
 	return model{
 		httpData:       httpData,
 		dump:           dump,
+		appVersion:     appVersion,
 		err:            err,
 		expandedFields: make(map[string]struct{}),
 		pendingDevices: make(map[string]PendingDevice),
@@ -827,6 +827,7 @@ func (m model) View() string {
 						m.thisDeviceStatus,
 						m.folders,
 						m.version,
+						m.appVersion,
 					),
 
 					viewDevices(m.devices, m.currentTime, m.expandedFields),
@@ -993,6 +994,7 @@ func viewStatus(
 	this ThisDeviceStatus,
 	folders []FolderViewModel,
 	version syncthing.SystemVersion,
+	appVersion string,
 ) string {
 	foo := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -1045,7 +1047,7 @@ func viewStatus(
 	).
 		Row("Uptime", HumanizeDuration(this.UpTime)).
 		Row("Syncthing Version", fmt.Sprintf("%s, %s (%s)", version.Version, osName(version.OS), archName(version.Arch))).
-		Row("Version", VERSION)
+		Row("Version", appVersion)
 
 	header := lipgloss.NewStyle().PaddingBottom(1).Bold(true).Render(this.Name)
 	return foo.Render(
