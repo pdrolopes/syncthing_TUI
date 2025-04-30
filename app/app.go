@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
@@ -55,6 +56,7 @@ type model struct {
 	expandedFields                 map[string]struct{}
 	ongoingUserAction              bool
 	currentTime                    time.Time
+	viewport                       viewport.Model
 	addDeviceModal                 AddDeviceModel
 	confirmRevertLocalChangesModal ConfirmRevertLocalAdditions
 	putConfig                      PutConfig
@@ -161,7 +163,7 @@ var quitKeys = key.NewBinding(
 	key.WithHelp("", "press q to quit"),
 )
 
-func NewModel(appVersion string) model {
+func New(appVersion string) model {
 	var dump *os.File
 	if _, ok := os.LookupEnv("DEBUG"); ok {
 		var err error
@@ -198,6 +200,7 @@ func NewModel(appVersion string) model {
 		dump:           dump,
 		appVersion:     appVersion,
 		err:            err,
+		viewport:       viewport.New(0, 0),
 		expandedFields: make(map[string]struct{}),
 		pendingDevices: make(map[string]PendingDevice),
 		currentTime:    time.Now(),
@@ -287,6 +290,12 @@ type FetchedPendingDevices struct {
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	m, cmd := Update(m, msg)
+	m.viewport.SetContent(m.ViewPortContent())
+	return m, cmd
+}
+
+func Update(m model, msg tea.Msg) (model, tea.Cmd) {
 	if m.dump != nil {
 		spew.Fdump(m.dump, msg)
 	}
@@ -307,7 +316,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, quitKeys):
 			return m, tea.Quit
 		default:
-			return m, nil
+			var cmd tea.Cmd
+			m.viewport, cmd = m.viewport.Update(msg)
+			return m, cmd
 		}
 	case tea.MouseMsg:
 		if m.addDeviceModal.Show {
@@ -323,10 +334,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return handleMouseLeftClick(m, msg)
 		}
 
-		return m, nil
+		var cmd tea.Cmd
+		m.viewport, cmd = m.viewport.Update(msg)
+		return m, cmd
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.viewport.Height = msg.Height
+		m.viewport.Width = msg.Width
 		return m, nil
 	case FetchedEventsMsg:
 		if msg.err != nil {
@@ -814,24 +829,7 @@ func (m model) View() string {
 		return m.err.Error()
 	}
 
-	pendingDevices := lo.Values(m.pendingDevices)
-	sort.Sort(PendingDeviceList(pendingDevices))
-
-	main := lipgloss.NewStyle().MaxHeight(m.height).Render(
-		lipgloss.JoinVertical(lipgloss.Center,
-			viewPendingDevices(pendingDevices),
-			lipgloss.JoinHorizontal(lipgloss.Top,
-				viewFolders(m.folders, m.expandedFields),
-				lipgloss.JoinVertical(lipgloss.Left,
-					viewStatus(
-						m.thisDeviceStatus,
-						m.folders,
-						m.version,
-						m.appVersion,
-					),
-
-					viewDevices(m.devices, m.currentTime, m.expandedFields),
-				))))
+	main := m.viewport.View()
 
 	if m.addDeviceModal.Show {
 		modal := m.addDeviceModal.View()
@@ -852,6 +850,29 @@ func (m model) View() string {
 	}
 
 	return zone.Scan(main)
+}
+
+func (m model) ViewPortContent() string {
+	pendingDevices := lo.Values(m.pendingDevices)
+	sort.Sort(PendingDeviceList(pendingDevices))
+
+	main := lipgloss.NewStyle().Render(
+		lipgloss.JoinVertical(lipgloss.Center,
+			viewPendingDevices(pendingDevices),
+			lipgloss.JoinHorizontal(lipgloss.Top,
+				viewFolders(m.folders, m.expandedFields),
+				lipgloss.JoinVertical(lipgloss.Left,
+					viewStatus(
+						m.thisDeviceStatus,
+						m.folders,
+						m.version,
+						m.appVersion,
+					),
+
+					viewDevices(m.devices, m.currentTime, m.expandedFields),
+				))))
+
+	return main
 }
 
 func viewConfirmRevertLocalChangesFolder() string {

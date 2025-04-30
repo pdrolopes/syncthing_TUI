@@ -13,7 +13,7 @@ var VERSION = "unknown"
 
 func main() {
 	zone.NewGlobal()
-	p := tea.NewProgram(app.NewModel(VERSION), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(app.New(VERSION), tea.WithAltScreen(), tea.WithMouseCellMotion())
 
 	if _, err := p.Run(); err != nil {
 		fmt.Println(err)
